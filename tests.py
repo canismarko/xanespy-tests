@@ -22,9 +22,9 @@
 
 import datetime as dt
 import unittest
-from unittest.mock import MagicMock, Mock
 import math
 import os
+import shutil
 
 import h5py
 import numpy as np
@@ -32,19 +32,17 @@ import pandas as pd
 from matplotlib.colors import Normalize
 import pytz
 
-from cases import HDFTestCase, XanespyTestCase
+from cases import XanespyTestCase
 from xanespy.utilities import xycoord, prog
-from xanespy.peakfitting import Peak
 from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
 from xanespy.frame import ( TXMFrame, xy_to_pixel, pixel_to_xy, Extent,
                         Pixel, rebin_image, apply_reference, position)
 from xanespy.edges import KEdge, k_edges
-from xanespy.importers import import_ssrl_frameset, import_aps_8BM_frameset
+from xanespy.importers import import_ssrl_frameset, _average_frames
 from xanespy.xradia import XRMFile, decode_ssrl_params, decode_aps_params
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
                            Zoneplate, ZoneplatePoint, Detector)
-from xanespy import xanes_frameset
-from xanespy import plotter
+from xanespy.txmstore import TXMStore
 
 testdir = os.path.dirname(__file__)
 ssrldir = os.path.join(testdir, 'ssrl-txm-data')
@@ -166,7 +164,7 @@ class SSRLScriptTest(unittest.TestCase):
             self.assertEqual(f.readline(), 'collect Test0_fov0_08250.0_eV_000of005.xrm\n')
 
 
-class SsrlImportTest(XanespyTestCase):
+class SSRLImportTest(XanespyTestCase):
     """Check that the program can import a collection of SSRL frames from
     a directory."""
     def setUp(self):
@@ -178,12 +176,12 @@ class SsrlImportTest(XanespyTestCase):
         if os.path.exists(self.hdf):
             os.remove(self.hdf)
 
-    def test_import_timestamp(self):
+    def test_imported_hdf(self):
         import_ssrl_frameset(ssrldir, hdf_filename=self.hdf, quiet=True)
         # Check that the file was created
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
-            group = f['ssrl-test-data_rep1_']
+            group = f['ssrl-test-data_rep1']
             keys = list(group.keys())
             self.assertIn('intensities', keys)
             self.assertEqual(group['intensities'].shape, (2, 1024, 1024))
@@ -191,10 +189,64 @@ class SsrlImportTest(XanespyTestCase):
             self.assertIn('absorbances', keys)
             self.assertEqual(group['pixel_sizes'].attrs['unit'], 'um')
             self.assertTrue(np.array_equal(group['energies'].value, np.array([8324., 8354.])))
-            self.assertIn('starttimes', keys)
-            self.assertIn('endtimes', keys)
+            self.assertIn('timestamps', keys)
             self.assertIn('filenames', keys)
             self.assertIn('positions', keys)
+
+    def test_params_from_ssrl(self):
+        # First a reference frame
+        ref_filename = "rep01_000001_ref_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
+        result = decode_ssrl_params(ref_filename)
+        expected = {
+            'repetition': 1,
+            'date_string': '',
+            'sample_name': 'NCA_INSITU_OCV_FOV01_Ni',
+            'position_name': '',
+            'is_background': True,
+            'energy': 8250.0,
+        }
+        self.assertEqual(result, expected)
+        # Now a sample field of view
+        sample_filename = "rep01_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
+        result = decode_ssrl_params(sample_filename)
+        expected = {
+            'repetition': 1,
+            'date_string': '',
+            'sample_name': 'NCA_INSITU_OCV_FOV01_Ni',
+            'position_name': '',
+            'is_background': False,
+            'energy': 8250.0,
+        }
+        self.assertEqual(result, expected)
+
+
+class TXMStoreTest(XanespyTestCase):
+    hdfname = os.path.join(ssrldir, 'txmstore-test.h5')
+    @classmethod
+    def setUpClass(cls):
+        # Prepare an HDF5 file that these tests can use.
+        import_ssrl_frameset(ssrldir, hdf_filename=cls.hdfname, quiet=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Delete temporary HDF5 files
+        if os.path.exists(cls.hdfname):
+            os.remove(cls.hdfname)
+
+    def test_getters(self):
+        store = TXMStore(hdf_filename=self.hdfname,
+                         groupname='ssrl-test-data_rep1',
+                         mode='r')
+        self.assertEqual(store.intensities.shape, (2, 1024, 1024))
+        self.assertEqual(store.references.shape, (2, 1024, 1024))
+        self.assertEqual(store.absorbances.shape, (2, 1024, 1024))
+        self.assertEqual(store.pixel_sizes.shape, (2,))
+        self.assertEqual(store.energies.shape, (2,))
+        self.assertEqual(store.timestamps.shape, (2, 2))
+        self.assertEqual(store.positions.shape, (2, 3))
+
+    def test_setters(self):
+        pass
 
 
 class ApsScriptTest(unittest.TestCase):
@@ -262,6 +314,8 @@ class ApsScriptTest(unittest.TestCase):
         with open(self.output_path, 'r') as f:
             lines = f.readlines()
         # Check that the first zone plate is properly set
+        assert False, "Test output of lines"
+        print(lines)
 
     def test_first_frame(self):
         with open(self.output_path, 'w') as f:
@@ -459,14 +513,14 @@ class TXMMathTest(XanespyTestCase):
         absorbances = [700, 705, 703]
         energies = [50, 55, 60]
         data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_direct_whiteline(data, edge=k_edges['Ni']())
+        out, goodness = calculate_direct_whiteline(data, edge=k_edges['Ni_NCA']())
         self.assertApproximatelyEqual(out, 55)
         # Test using multi-dimensional absorbances (eg. image frames)
         absorbances = [np.array([700, 700]),
                        np.array([705, 703]),
                        np.array([703, 707])]
         data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_direct_whiteline(data, edge=k_edges['Ni']())
+        out, goodness = calculate_direct_whiteline(data, edge=k_edges['Ni_NCA']())
         self.assertApproximatelyEqual(out[0], 55)
         self.assertApproximatelyEqual(out[1], 60)
 
@@ -476,7 +530,7 @@ class TXMMathTest(XanespyTestCase):
         absorbances = [700, 698, 705, 703, 702]
         energies = [8250, 8252, 8351, 8440, 8450]
         data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni']())
+        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni_NCA']())
         self.assertApproximatelyEqual(out, 8333)
         # Test using multi-dimensional absorbances (eg. image frames)
         absorbances = [np.array([700, 700]),
@@ -485,7 +539,7 @@ class TXMMathTest(XanespyTestCase):
                        np.array([703, 705]),
                        np.array([702, 707])]
         data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni']())
+        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni_NCA']())
         self.assertApproximatelyEqual(out[0], 8333)
         self.assertApproximatelyEqual(out[1], 8333)
 
@@ -501,19 +555,20 @@ class TXMMathTest(XanespyTestCase):
         ]
         energies = [50, 55, 60]
         data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_direct_whiteline(data, edge=k_edges['Ni']())
+        out, goodness = calculate_direct_whiteline(data, edge=k_edges['Ni_NCA']())
         expected = [[50, 60],
                     [55, 55]]
-        self.assertApproximatelyEqual(out[0][0], 50)
-        self.assertApproximatelyEqual(out[0][1], 60)
-        self.assertApproximatelyEqual(out[1][0], 55)
-        self.assertApproximatelyEqual(out[1][1], 55)
+        self.assertTrue(np.equal(out, expected))
+        # self.assertApproximatelyEqual(out[0][0], 50)
+        # self.assertApproximatelyEqual(out[0][1], 60)
+        # self.assertApproximatelyEqual(out[1][0], 55)
+        # self.assertApproximatelyEqual(out[1][1], 55)
 
     def test_fit_whiteline(self):
         filename = 'tests/testdata/NCA-cell2-soc1-fov1-xanesspectrum.tsv'
         data = pd.Series.from_csv(filename, sep="\t")
         # data = data[:8360]
-        edge = k_edges['Ni']()
+        edge = k_edges['Ni_NCA']()
         peak, goodness = edge.fit(data)
         self.assertTrue(8352 < peak.center() < 8353,
                         "Center not within range {} eV".format(peak.center()))
@@ -525,8 +580,38 @@ class TXMMathTest(XanespyTestCase):
             "residuals too high: {}".format(goodness)
         )
 
+class TXMFramesetTest(XanespyTestCase):
+    """Set of python tests that work on full framesets and require data
+    from multiple frames to make sense."""
+    originhdf = os.path.join(ssrldir, 'txmstore-test.h5')
+    temphdf = os.path.join(ssrldir, 'txmstore-test-tmp.h5')
 
-class TXMFrameTest(HDFTestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Prepare an HDF5 file that these tests can use.
+        import_ssrl_frameset(ssrldir, hdf_filename=cls.originhdf, quiet=True)
+
+    def setUp(self):
+        # Copy the HDF5 file so we can safely make changes
+        shutil.copy(self.originhdf, self.temphdf)
+        self.frameset = XanesFrameset(filename=self.temphdf,
+                                      edge=k_edges['Ni_NCA'])
+
+    def tearDown(self):
+        if os.path.exists(self.temphdf):
+            os.remove(self.temphdf)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Delete temporary HDF5 files
+        if os.path.exists(cls.originhdf):
+            os.remove(cls.originhdf)
+        pass
+
+    def test_correct_magnification(self):
+        self.frameset.correct_magnification()
+
+class TXMFrameTest(XanespyTestCase):
 
     def test_average_frames(self):
         # Define three frames for testing
@@ -570,30 +655,6 @@ class TXMFrameTest(HDFTestCase):
             'sample_name': 'ocv',
             'position_name': 'ref',
             'is_background': True,
-            'energy': 8250.0,
-        }
-        self.assertEqual(result, expected)
-
-    def test_params_from_ssrl(self):
-        # First a reference frame
-        ref_filename = "rep01_000001_ref_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
-        result = decode_ssrl_params(ref_filename)
-        expected = {
-            'date_string': '',
-            'sample_name': 'NCA_INSITU_OCV_FOV01_Ni',
-            'position_name': '',
-            'is_background': True,
-            'energy': 8250.0,
-        }
-        self.assertEqual(result, expected)
-        # Now a sample field of view
-        sample_filename = "rep01_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
-        result = decode_ssrl_params(sample_filename)
-        expected = {
-            'date_string': '',
-            'sample_name': 'NCA_INSITU_OCV_FOV01_Ni',
-            'position_name': '',
-            'is_background': False,
             'energy': 8250.0,
         }
         self.assertEqual(result, expected)
@@ -729,7 +790,6 @@ class TXMFrameTest(HDFTestCase):
 
     def test_rebin_odd(self):
         """There is a bug where oddly shaped arrays don't rebin well."""
-        frame = TXMFrame()
         original_data = np.array([
             [1., 1., 3., 3., 4],
             [2, 2, 5, 5, 5],

@@ -28,16 +28,16 @@ class XanespyTestCase(unittest.TestCase):
                 self.fail(msg=msg.format(actual=actual, expected=expected))
 
 
-class HDFTestCase(XanespyTestCase):
-    """A test case that sets up and tears down an HDF file."""
-    def setUp(self):
-        curdir = os.path.dirname(os.path.realpath(__file__))
-        self.hdf_filename = os.path.join(curdir, 'txm-frame-test.hdf')
-        if os.path.exists(self.hdf_filename):
-            os.remove(self.hdf_filename)
-        self.hdf_file = h5py.File(self.hdf_filename, 'w-')
+# class HDFTestCase(XanespyTestCase):
+#     """A test case that sets up and tears down an HDF file."""
+#     def setUp(self):
+#         curdir = os.path.dirname(os.path.realpath(__file__))
+#         self.hdf_filename = os.path.join(curdir, 'txm-frame-test.hdf')
+#         if os.path.exists(self.hdf_filename):
+#             os.remove(self.hdf_filename)
+#         self.hdf_file = h5py.File(self.hdf_filename, 'w-')
 
-    def tearDown(self):
-        self.hdf_file.close()
-        if os.path.exists(self.hdf_filename):
-            os.remove(self.hdf_filename)
+#     def tearDown(self):
+#         self.hdf_file.close()
+#         if os.path.exists(self.hdf_filename):
+#             os.remove(self.hdf_filename)
