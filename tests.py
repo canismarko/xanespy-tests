@@ -33,12 +33,13 @@ from matplotlib.colors import Normalize
 import pytz
 
 from cases import XanespyTestCase
-from xanespy.utilities import xycoord, prog
+from xanespy.utilities import xycoord, prog, position, Extent
 from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
-from xanespy.frame import ( TXMFrame, xy_to_pixel, pixel_to_xy, Extent,
-                        Pixel, rebin_image, apply_reference, position)
+from xanespy.xanes_calculations import transform_images
+from xanespy.frame import ( TXMFrame, xy_to_pixel, pixel_to_xy,
+                        Pixel, rebin_image, apply_reference)
 from xanespy.edges import KEdge, k_edges
-from xanespy.importers import import_ssrl_frameset, _average_frames
+from xanespy.importers import import_ssrl_frameset, _average_frames, magnification_correction
 from xanespy.xradia import XRMFile, decode_ssrl_params, decode_aps_params
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
                            Zoneplate, ZoneplatePoint, Detector)
@@ -191,7 +192,8 @@ class SSRLImportTest(XanespyTestCase):
             self.assertTrue(np.array_equal(group['energies'].value, np.array([8324., 8354.])))
             self.assertIn('timestamps', keys)
             self.assertIn('filenames', keys)
-            self.assertIn('positions', keys)
+            self.assertIn('original_positions', keys)
+            self.assertIn('relative_positions', keys)
 
     def test_params_from_ssrl(self):
         # First a reference frame
@@ -218,6 +220,27 @@ class SSRLImportTest(XanespyTestCase):
             'energy': 8250.0,
         }
         self.assertEqual(result, expected)
+
+    def test_magnification_correction(self):
+        # Prepare some fake data
+        img1 = [[1,1,1,1,1],
+                [1,0,0,0,1],
+                [1,0,0,0,1],
+                [1,0,0,0,1],
+                [1,1,1,1,1]]
+        img2 = [[0,0,0,0,0],
+                [0,1,1,1,0],
+                [0,1,0,1,0],
+                [0,1,1,1,0],
+                [0,0,0,0,0]]
+        imgs = np.array([img1, img2], dtype=np.float)
+        pixel_sizes = np.array([1, 0.5])
+        scales, translations = magnification_correction(imgs, pixel_sizes)
+        # Check that the first result is not corrected
+        print(transform_images(imgs, scales=scales, translations=translations))
+        print("scales:", scales, "Translations", translations)
+        self.assertEqual(scales[0], 1)
+        self.assertEqual(list(translations[0]), [0, 0])
 
 
 class TXMStoreTest(XanespyTestCase):
