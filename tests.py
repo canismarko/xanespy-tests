@@ -3,20 +3,20 @@
 #
 # Copyright © 2016 Mark Wolf
 #
-# This file is part of scimap.
+# This file is part of Xanespy.
 #
-# Scimap is free software: you can redistribute it and/or modify
+# Xanespy is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# Scimap is distributed in the hope that it will be useful,
+# Xanespy is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with Scimap.  If not, see <http://www.gnu.org/licenses/>.
+# along with Xanespy.  If not, see <http://www.gnu.org/licenses/>.
 
 # flake8: noqa
 
@@ -36,8 +36,8 @@ from cases import XanespyTestCase
 from xanespy.utilities import xycoord, prog, position, Extent
 from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
 from xanespy.xanes_calculations import transform_images
-from xanespy.frame import ( TXMFrame, xy_to_pixel, pixel_to_xy,
-                        Pixel, rebin_image, apply_reference)
+from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
+                           Pixel, rebin_image, apply_reference)
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import import_ssrl_frameset, _average_frames, magnification_correction
 from xanespy.xradia import XRMFile, decode_ssrl_params, decode_aps_params
@@ -173,7 +173,6 @@ class SSRLImportTest(XanespyTestCase):
         self.hdf = os.path.join(ssrldir, 'testdata.h5')
 
     def tearDown(self):
-        return
         if os.path.exists(self.hdf):
             os.remove(self.hdf)
 
@@ -188,7 +187,7 @@ class SSRLImportTest(XanespyTestCase):
             self.assertEqual(group['intensities'].shape, (2, 1024, 1024))
             self.assertIn('references', keys)
             self.assertIn('absorbances', keys)
-            self.assertEqual(group['pixel_sizes'].attrs['unit'], 'um')
+            self.assertEqual(group['pixel_sizes'].attrs['unit'], 'µm')
             self.assertTrue(np.array_equal(group['energies'].value, np.array([8324., 8354.])))
             self.assertIn('timestamps', keys)
             self.assertIn('filenames', keys)
@@ -237,10 +236,11 @@ class SSRLImportTest(XanespyTestCase):
         pixel_sizes = np.array([1, 0.5])
         scales, translations = magnification_correction(imgs, pixel_sizes)
         # Check that the first result is not corrected
-        print(transform_images(imgs, scales=scales, translations=translations))
-        print("scales:", scales, "Translations", translations)
         self.assertEqual(scales[0], 1)
         self.assertEqual(list(translations[0]), [0, 0])
+        # Check the values for translation and scale for the changed image
+        self.assertEqual(scales[1], 0.5)
+        self.assertEqual(list(translations[1]), [1., 1.])
 
 
 class TXMStoreTest(XanespyTestCase):
