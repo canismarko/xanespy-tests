@@ -38,6 +38,9 @@ from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, ca
 from xanespy.xanes_calculations import transform_images
 from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
                            Pixel, rebin_image, apply_reference)
+from xanespy.xanes_math import transform_images
+from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
+                           Pixel, rebin_image, apply_reference)
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import import_ssrl_frameset, _average_frames, magnification_correction
 from xanespy.xradia import XRMFile, decode_ssrl_params, decode_aps_params
@@ -233,10 +236,10 @@ class SSRLImportTest(XanespyTestCase):
                 [0,1,1,1,0],
                 [0,0,0,0,0]]
         imgs = np.array([img1, img2], dtype=np.float)
-        pixel_sizes = np.array([1, 0.5])
+        pixel_sizes = np.array([1, 2])
         scales, translations = magnification_correction(imgs, pixel_sizes)
         # Check that the first result is not corrected
-        self.assertEqual(scales[0], 1)
+        self.assertEqual(scales[0], 1.)
         self.assertEqual(list(translations[0]), [0, 0])
         # Check the values for translation and scale for the changed image
         self.assertEqual(scales[1], 0.5)
