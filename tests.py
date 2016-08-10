@@ -35,7 +35,7 @@ import pytz
 from cases import XanespyTestCase
 from xanespy.utilities import xycoord, prog, position, Extent
 from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
-from xanespy.xanes_calculations import transform_images
+from xanespy.xanes_math import transform_images
 from xanespy.frame import ( TXMFrame, xy_to_pixel, pixel_to_xy,
                         Pixel, rebin_image, apply_reference)
 from xanespy.edges import KEdge, k_edges
@@ -234,12 +234,12 @@ class SSRLImportTest(XanespyTestCase):
                 [0,1,1,1,0],
                 [0,0,0,0,0]]
         imgs = np.array([img1, img2], dtype=np.float)
-        pixel_sizes = np.array([1, 0.5])
+        pixel_sizes = np.array([1, 2])
         scales, translations = magnification_correction(imgs, pixel_sizes)
         # Check that the first result is not corrected
         print(transform_images(imgs, scales=scales, translations=translations))
         print("scales:", scales, "Translations", translations)
-        self.assertEqual(scales[0], 1)
+        self.assertEqual(scales[1], 0.5)
         self.assertEqual(list(translations[0]), [0, 0])
 
 
