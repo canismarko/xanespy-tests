@@ -35,7 +35,7 @@ import pytz
 from cases import XanespyTestCase
 from xanespy.utilities import xycoord, prog, position, Extent
 from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
-from xanespy.xanes_calculations import transform_images
+from xanespy.xanes_math import transform_images
 from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
                            Pixel, rebin_image, apply_reference)
 from xanespy.xanes_math import transform_images
@@ -634,8 +634,68 @@ class TXMFramesetTest(XanespyTestCase):
             os.remove(cls.originhdf)
         pass
 
-    def test_correct_magnification(self):
-        self.frameset.correct_magnification()
+    def test_align_frames(self):
+        # Perform an excessive translation to ensure data are correctable
+        with self.frameset.store(mode='r+') as store:
+            transform_images(store.absorbances,
+                             translations=np.array([[0, 0],[100, 100]]),
+                             out=store.absorbances)
+            old_imgs = store.absorbances.value
+        # Perform an alignment but don't commit to disk
+        self.frameset.align_frames(commit=False, reference_frame=0)
+        # Check that the translations weren't applied yet
+        with self.frameset.store() as store:
+            hasnotchanged = np.all(np.equal(old_imgs, store.absorbances.value))
+        self.assertTrue(hasnotchanged)
+        # Apply the translations
+        self.frameset.apply_transformations(crop=True, commit=True)
+        with self.frameset.store() as store:
+            haschanged = np.any(~np.equal(old_imgs, store.absorbances.value))
+            new_shape = store.absorbances.shape
+        self.assertTrue(haschanged)
+        self.assertNotEqual(old_imgs.shape, new_shape)
+
+    def test_deferred_transformations(self):
+        """Test that the system properly stores data transformations for later
+        processing."""
+        # Check that staged transforms are initially None
+        self.assertTrue(self.frameset._translations is None)
+        self.assertTrue(self.frameset._scales is None)
+        self.assertTrue(self.frameset._rotations is None)
+        # Stage some transformations
+        self.frameset.stage_transformations(
+            translations=np.array([[0, 0],[1, 1]]),
+            scales=np.array([1, 0.5]),
+            rotations=np.array([0, 3])
+        )
+        # Check that the transformations have been saved
+        self.assertFalse(self.frameset._translations is None)
+        self.assertFalse(self.frameset._scales is None)
+        self.assertFalse(self.frameset._rotations is None)
+        # Check that transformations accumulated
+        self.frameset.stage_transformations(
+            translations=np.array([[0, 0],[1, 1]]),
+            scales=np.array([1, 0.5]),
+            rotations=np.array([0, 3])
+        )
+        self.assertTrue(np.array_equal(self.frameset._translations,
+                                       np.array([[0, 0],[2, 2]])))
+        self.assertTrue(np.array_equal(self.frameset._scales,
+                                       np.array([1., 0.25])))
+        self.assertTrue(np.array_equal(self.frameset._rotations,
+                                       np.array([0, 6])))
+        # Check that transformations are reset after being applied
+        with self.frameset.store() as store:
+            old_shape = store.absorbances.shape
+        self.frameset.apply_transformations(commit=True, crop=True)
+        self.assertEqual(self.frameset._translations, None)
+        self.assertEqual(self.frameset._scales, None)
+        self.assertEqual(self.frameset._rotations, None)
+        # Check that cropping was successfully applied
+        with self.frameset.store() as store:
+            new_shape = store.absorbances.shape
+        self.assertEqual(new_shape, (2, 1022, 1022))
+
 
 class TXMFrameTest(XanespyTestCase):
 
@@ -659,7 +719,7 @@ class TXMFrameTest(XanespyTestCase):
             [15, 19, 23],
             [11, 23, 31],
         ])
-        avg_frame = average_frames(frame1, frame2, frame3)
+        avg_frame = _average_frames(frame1, frame2, frame3)
         expected_array = np.array([
             [11/3, 18/3, 25/3],
             [25/3, 32/3, 39/3],
