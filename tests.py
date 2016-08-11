@@ -35,7 +35,7 @@ import pytz
 from cases import XanespyTestCase
 from xanespy.utilities import xycoord, prog, position, Extent
 from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
-from xanespy.xanes_math import transform_images
+from xanespy.xanes_math import transform_images, direct_whitelines
 from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
                            Pixel, rebin_image, apply_reference)
 from xanespy.xanes_math import transform_images
@@ -695,6 +695,22 @@ class TXMFramesetTest(XanespyTestCase):
         with self.frameset.store() as store:
             new_shape = store.absorbances.shape
         self.assertEqual(new_shape, (2, 1022, 1022))
+
+
+class XanesMathTest(XanespyTestCase):
+
+    def test_direct_whiteline(self):
+        """Check the algorithm for calculating the whiteline position of a
+        XANES spectrum using the maximum value."""
+        # Load some test data
+        spectrum = pd.read_csv('ssrl-txm-data/NCA_xanes.csv',
+                               index_col=0, sep=' ', names=['Absorbance'])
+        # Calculate the whiteline position
+        intensities = np.array([spectrum['Absorbance'].values])
+        results = direct_whitelines(spectra=intensities,
+                                    energies=spectrum.index,
+                                    edge=k_edges['Ni_NCA'])
+        self.assertEqual(results, [8350.])
 
 
 class TXMFrameTest(XanespyTestCase):
