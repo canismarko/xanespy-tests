@@ -33,24 +33,30 @@ from matplotlib.colors import Normalize
 import pytz
 
 from cases import XanespyTestCase
-from xanespy.utilities import xycoord, prog, position, Extent
-from xanespy.xanes_frameset import XanesFrameset, calculate_direct_whiteline, calculate_gaussian_whiteline
+from xanespy import exceptions
+from xanespy.utilities import (xycoord, prog, position, Extent,
+                               xy_to_pixel, pixel_to_xy)
+from xanespy.xanes_frameset import (XanesFrameset,
+                                    calculate_direct_whiteline,
+                                    calculate_gaussian_whiteline)
 from xanespy.xanes_math import transform_images, direct_whitelines
-from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
-                           Pixel, rebin_image, apply_reference)
+from xanespy.frame import (TXMFrame, Pixel, rebin_image,
+                           apply_reference)
 from xanespy.xanes_math import transform_images
-from xanespy.frame import (TXMFrame, xy_to_pixel, pixel_to_xy,
+from xanespy.frame import (TXMFrame,
                            Pixel, rebin_image, apply_reference)
 from xanespy.edges import KEdge, k_edges
-from xanespy.importers import import_ssrl_frameset, _average_frames, magnification_correction
+from xanespy.importers import (import_ssrl_frameset,
+                               import_aps_8BM_frameset,_average_frames,
+                               magnification_correction)
 from xanespy.xradia import XRMFile, decode_ssrl_params, decode_aps_params
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
                            Zoneplate, ZoneplatePoint, Detector)
 from xanespy.txmstore import TXMStore
 
-testdir = os.path.dirname(__file__)
-ssrldir = os.path.join(testdir, 'ssrl-txm-data')
-apsdir = os.path.join(testdir, 'aps-txm-data')
+TEST_DIR = os.path.dirname(__file__)
+SSRL_DIR = os.path.join(TEST_DIR, 'txm-data-ssrl')
+APS_DIR = os.path.join(TEST_DIR, 'txm-data-aps')
 
 # Silence progress bars for testing
 # prog.quiet = True
@@ -65,8 +71,8 @@ class SSRLScriptTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.output_path = os.path.join(testdir, 'ssrl_script.txt')
-        self.scaninfo_path = os.path.join(testdir, 'ScanInfo_ssrl_script.txt')
+        self.output_path = os.path.join(TEST_DIR, 'ssrl_script.txt')
+        self.scaninfo_path = os.path.join(TEST_DIR, 'ScanInfo_ssrl_script.txt')
         # Check to make sure the file doesn't already exists
         if os.path.exists(self.output_path):
             os.remove(self.output_path)
@@ -97,7 +103,7 @@ class SSRLScriptTest(unittest.TestCase):
                                positions=[position(3, 4, 5)],
                                reference_position=position(0, 1, 2),
                                abba_mode=False)
-        scaninfopath = os.path.join(testdir, 'ScanInfo_ssrl_script.txt')
+        scaninfopath = os.path.join(TEST_DIR, 'ScanInfo_ssrl_script.txt')
         self.assertTrue(os.path.exists(scaninfopath))
         with open(scaninfopath) as f:
             self.assertEqual(f.readline(), 'VERSION 1\n')
@@ -168,19 +174,53 @@ class SSRLScriptTest(unittest.TestCase):
             self.assertEqual(f.readline(), 'collect Test0_fov0_08250.0_eV_000of005.xrm\n')
 
 
+class APSImportTest(XanespyTestCase):
+    """Check that the program can import a collection of SSRL frames from
+    a directory."""
+    def setUp(self):
+        prog.quiet = True
+        self.hdf = os.path.join(APS_DIR, 'testdata.h5')
+
+    def tearDown(self):
+        if os.path.exists(self.hdf):
+            # os.remove(self.hdf)
+            pass
+
+    def test_imported_hdf(self):
+        import_aps_8BM_frameset(APS_DIR, hdf_filename=self.hdf, quiet=True)
+        self.assertTrue(os.path.exists(self.hdf))
+        # Check that the file was created
+        with h5py.File(self.hdf, mode='r') as f:
+            group = f['ocv_fov03/imported']
+            keys = list(group.keys())
+            self.assertIn('intensities', keys)
+            self.assertEqual(group['intensities'].shape, (2, 1024, 1024))
+            self.assertIn('references', keys)
+            self.assertIn('absorbances', keys)
+            self.assertEqual(group['pixel_sizes'].attrs['unit'], 'µm')
+            self.assertEqual(group['pixel_sizes'].shape, (2,))
+            expected_Es = np.array([8249.9365234375, 8353.0322265625])
+            self.assertTrue(np.array_equal(group['energies'].value, expected_Es))
+            self.assertIn('timestamps', keys)
+            self.assertIn('filenames', keys)
+            self.assertIn('original_positions', keys)
+            self.assertIn('relative_positions', keys)
+            self.assertEqual(group['relative_positions'].shape, (2, 3))
+
+
 class SSRLImportTest(XanespyTestCase):
     """Check that the program can import a collection of SSRL frames from
     a directory."""
     def setUp(self):
         prog.quiet = True
-        self.hdf = os.path.join(ssrldir, 'testdata.h5')
+        self.hdf = os.path.join(SSRL_DIR, 'testdata.h5')
 
     def tearDown(self):
         if os.path.exists(self.hdf):
             os.remove(self.hdf)
 
     def test_imported_hdf(self):
-        import_ssrl_frameset(ssrldir, hdf_filename=self.hdf, quiet=True)
+        import_ssrl_frameset(SSRL_DIR, hdf_filename=self.hdf, quiet=True)
         # Check that the file was created
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
@@ -247,11 +287,11 @@ class SSRLImportTest(XanespyTestCase):
 
 
 class TXMStoreTest(XanespyTestCase):
-    hdfname = os.path.join(ssrldir, 'txmstore-test.h5')
+    hdfname = os.path.join(SSRL_DIR, 'txmstore-test.h5')
     @classmethod
     def setUpClass(cls):
         # Prepare an HDF5 file that these tests can use.
-        import_ssrl_frameset(ssrldir, hdf_filename=cls.hdfname, quiet=True)
+        import_ssrl_frameset(SSRL_DIR, hdf_filename=cls.hdfname, quiet=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -269,7 +309,43 @@ class TXMStoreTest(XanespyTestCase):
         self.assertEqual(store.pixel_sizes.shape, (2,))
         self.assertEqual(store.energies.shape, (2,))
         self.assertEqual(store.timestamps.shape, (2, 2))
-        self.assertEqual(store.positions.shape, (2, 3))
+        self.assertEqual(store.original_positions.shape, (2, 3))
+
+    def test_fork_group(self):
+        store = TXMStore(hdf_filename=self.hdfname,
+                         groupname='ssrl-test-data_rep1',
+                         mode='r+')
+        with self.assertRaises(exceptions.CreateGroupError):
+            store.fork_data_group(store.active_data_group)
+        store.active_data_group = 'new_group'
+        # Set a marker to see if it changes
+        store.data_group().attrs['test_val'] = 'Hello'
+        # Now verify that the previous group was overwritten
+        store.active_data_group = 'imported'
+        store.fork_data_group('new_group')
+        self.assertNotIn('test_val', list(store.data_group().attrs.keys()))
+        # Check that we can easily fork a non-existent group
+        store.fork_data_group('brand_new')
+        store.close()
+
+    def test_latest_data_group(self):
+        store = TXMStore(hdf_filename=self.hdfname,
+                         groupname='ssrl-test-data_rep1',
+                         mode='r+')
+        store.active_data_group = 'imported'
+        self.assertEqual(
+            store.parent_group().attrs['active_data_group'],
+            '/ssrl-test-data_rep1/imported'
+        )
+        # Change to a new group and see if a new HDF5 group is created
+        store.active_data_group = 'aligned'
+        self.assertEqual(
+            store.parent_group().attrs['active_data_group'],
+            '/ssrl-test-data_rep1/aligned'
+        )
+        self.assertIn('aligned', store.parent_group().keys())
+        self.assertIn('absorbances', list(store.data_group().keys()))
+        store.close()
 
     def test_setters(self):
         pass
@@ -280,7 +356,7 @@ class ApsScriptTest(unittest.TestCase):
     TXM experiment at APS beamline 8-BM-B."""
 
     def setUp(self):
-        self.output_path = os.path.join(testdir, 'aps_script.txt')
+        self.output_path = os.path.join(TEST_DIR, 'aps_script.txt')
         # Check to make sure the file doesn't already exists
         if os.path.exists(self.output_path):
             os.remove(self.output_path)
@@ -609,13 +685,13 @@ class TXMMathTest(XanespyTestCase):
 class TXMFramesetTest(XanespyTestCase):
     """Set of python tests that work on full framesets and require data
     from multiple frames to make sense."""
-    originhdf = os.path.join(ssrldir, 'txmstore-test.h5')
-    temphdf = os.path.join(ssrldir, 'txmstore-test-tmp.h5')
+    originhdf = os.path.join(SSRL_DIR, 'txmstore-test.h5')
+    temphdf = os.path.join(SSRL_DIR, 'txmstore-test-tmp.h5')
 
     @classmethod
     def setUpClass(cls):
         # Prepare an HDF5 file that these tests can use.
-        import_ssrl_frameset(ssrldir, hdf_filename=cls.originhdf, quiet=True)
+        import_ssrl_frameset(SSRL_DIR, hdf_filename=cls.originhdf, quiet=True)
 
     def setUp(self):
         # Copy the HDF5 file so we can safely make changes
@@ -763,7 +839,7 @@ class TXMFrameTest(XanespyTestCase):
 
     def test_pixel_size(self):
         sample_filename = "rep01_201502221044_NAT1050_Insitu03_p01_OCV_08250.0_eV_001of002.xrm"
-        xrm = XRMFile(os.path.join(ssrldir, sample_filename), flavor="ssrl")
+        xrm = XRMFile(os.path.join(SSRL_DIR, sample_filename), flavor="ssrl")
         self.assertApproximatelyEqual(
             xrm.um_per_pixel(),
             (0.0325783, 0.0325783)
@@ -771,7 +847,7 @@ class TXMFrameTest(XanespyTestCase):
 
     def test_timestamp_from_xrm(self):
         sample_filename = "rep01_201502221044_NAT1050_Insitu03_p01_OCV_08250.0_eV_001of002.xrm"
-        xrm = XRMFile(os.path.join(ssrldir, sample_filename), flavor="ssrl")
+        xrm = XRMFile(os.path.join(SSRL_DIR, sample_filename), flavor="ssrl")
         # Check start time
         start = dt.datetime(2015, 2, 22,
                             10, 47, 19,
@@ -786,7 +862,7 @@ class TXMFrameTest(XanespyTestCase):
 
         # Test APS frame
         sample_filename = "20151111_UIC_XANES00_sam01_8313.xrm"
-        xrm = XRMFile(os.path.join(apsdir, sample_filename), flavor="aps-old1")
+        xrm = XRMFile(os.path.join(APS_DIR, sample_filename), flavor="aps-old1")
         # Check start time
         start = dt.datetime(2015, 11, 11, 15, 42, 38, tzinfo=pytz.timezone('US/Central'))
         self.assertEqual(xrm.starttime(), start)
