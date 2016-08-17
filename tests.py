@@ -299,10 +299,15 @@ class TXMStoreTest(XanespyTestCase):
         if os.path.exists(cls.hdfname):
             os.remove(cls.hdfname)
 
-    def test_getters(self):
+    def store(self, mode='r'):
         store = TXMStore(hdf_filename=self.hdfname,
-                         groupname='ssrl-test-data_rep1',
-                         mode='r')
+                         parent_name='ssrl-test-data_rep1',
+                         data_name='imported',
+                         mode=mode)
+        return store
+
+    def test_getters(self):
+        store = self.store()
         self.assertEqual(store.intensities.shape, (2, 1024, 1024))
         self.assertEqual(store.references.shape, (2, 1024, 1024))
         self.assertEqual(store.absorbances.shape, (2, 1024, 1024))
@@ -311,44 +316,60 @@ class TXMStoreTest(XanespyTestCase):
         self.assertEqual(store.timestamps.shape, (2, 2))
         self.assertEqual(store.original_positions.shape, (2, 3))
 
+    def test_data_group(self):
+        store = self.store()
+        self.assertEqual(store.parent_group().name, '/ssrl-test-data_rep1')
+        self.assertEqual(store.data_group().name, '/ssrl-test-data_rep1/imported')
+
     def test_fork_group(self):
-        store = TXMStore(hdf_filename=self.hdfname,
-                         groupname='ssrl-test-data_rep1',
-                         mode='r+')
+        store = self.store('r+')
         with self.assertRaises(exceptions.CreateGroupError):
-            store.fork_data_group(store.active_data_group)
-        store.active_data_group = 'new_group'
+            store.fork_data_group(store.data_name)
         # Set a marker to see if it changes
+        store.parent_group().create_group('new_group')
+        store.data_name = 'new_group'
         store.data_group().attrs['test_val'] = 'Hello'
         # Now verify that the previous group was overwritten
-        store.active_data_group = 'imported'
+        store.data_name = 'imported'
         store.fork_data_group('new_group')
         self.assertNotIn('test_val', list(store.data_group().attrs.keys()))
+        # Check that the new group is registered as the "latest"
+        self.assertEqual(store.latest_data_name, 'new_group')
         # Check that we can easily fork a non-existent group
         store.fork_data_group('brand_new')
         store.close()
 
-    def test_latest_data_group(self):
-        store = TXMStore(hdf_filename=self.hdfname,
-                         groupname='ssrl-test-data_rep1',
-                         mode='r+')
-        store.active_data_group = 'imported'
-        self.assertEqual(
-            store.parent_group().attrs['active_data_group'],
-            '/ssrl-test-data_rep1/imported'
-        )
-        # Change to a new group and see if a new HDF5 group is created
-        store.active_data_group = 'aligned'
-        self.assertEqual(
-            store.parent_group().attrs['active_data_group'],
-            '/ssrl-test-data_rep1/aligned'
-        )
-        self.assertIn('aligned', store.parent_group().keys())
-        self.assertIn('absorbances', list(store.data_group().keys()))
+    def test_data_tree(self):
+        """Check that a data tree can be created showing the possible groups to choose from."""
+        store = self.store()
+        f = h5py.File(self.hdfname)
+        # Check that all top-level groups are accounted for
+        tree = store.data_tree()
+        self.assertEqual(len(f.keys()), len(tree))
+        # Check properties of a specific entry (absorbance data)
+        abs_dict = tree[0]['children'][0]['children'][0]
+        self.assertEqual(abs_dict['level'], 2)
+        self.assertEqual(abs_dict['context'], 'frameset')
+
+    def test_data_name(self):
+        store = self.store('r+')
+        store.data_name = 'imported'
+        self.assertEqual(store.data_name, 'imported')
+        # Check that data_name can't be set before the group exists
+        with self.assertRaises(exceptions.CreateGroupError):
+            store.data_name = 'new_group'
         store.close()
 
     def test_setters(self):
-        pass
+        store = self.store('r+')
+        # Check that the "type" attribute is set
+        store.absorbances = np.zeros((2, 1024, 1024))
+        self.assertEqual(store.absorbances.attrs['context'], 'frameset')
+
+    def test_get_frames(self):
+        store = self.store()
+        # Check that the method returns data
+        self.assertEqual(store.get_frames('absorbances').shape, (2, 1024, 1024))
 
 
 class ApsScriptTest(unittest.TestCase):
