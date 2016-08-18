@@ -25,12 +25,16 @@ import unittest
 import math
 import os
 import shutil
+import warnings
 
 import h5py
 import numpy as np
-import pandas as pd
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', PendingDeprecationWarning)
+    import pandas as pd
 from matplotlib.colors import Normalize
 import pytz
+from skimage import data
 
 from cases import XanespyTestCase
 from xanespy import exceptions
@@ -39,12 +43,9 @@ from xanespy.utilities import (xycoord, prog, position, Extent,
 from xanespy.xanes_frameset import (XanesFrameset,
                                     calculate_direct_whiteline,
                                     calculate_gaussian_whiteline)
-from xanespy.xanes_math import transform_images, direct_whitelines
+from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask
 from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
-from xanespy.xanes_math import transform_images
-from xanespy.frame import (TXMFrame,
-                           Pixel, rebin_image, apply_reference)
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import (import_ssrl_frameset,
                                import_aps_8BM_frameset,_average_frames,
@@ -796,11 +797,24 @@ class TXMFramesetTest(XanespyTestCase):
 
 class XanesMathTest(XanespyTestCase):
 
+    def setUp(self):
+        self.Edge = k_edges['Ni_NCA']
+        self.Es = np.linspace(8250, 8640, num=61)
+
+    def coins(self):
+        """Prepare some example frames using images from the skimage
+        library."""
+        coins = np.array([data.coins() for i in range(0, 61)])
+        # Adjust each frame to mimic an X-ray edge with a sigmoid
+        S = 1/(1+np.exp(-(self.Es-8353))) + 0.1*np.sin(4*self.Es-4*8353)
+        coins = (coins * S.reshape(61,1,1))
+        return coins
+
     def test_direct_whiteline(self):
         """Check the algorithm for calculating the whiteline position of a
         XANES spectrum using the maximum value."""
         # Load some test data
-        spectrum = pd.read_csv('ssrl-txm-data/NCA_xanes.csv',
+        spectrum = pd.read_csv(os.path.join(SSRL_DIR, 'NCA_xanes.csv'),
                                index_col=0, sep=' ', names=['Absorbance'])
         # Calculate the whiteline position
         intensities = np.array([spectrum['Absorbance'].values])
@@ -809,6 +823,36 @@ class XanesMathTest(XanespyTestCase):
                                     edge=k_edges['Ni_NCA'])
         self.assertEqual(results, [8350.])
 
+    def test_particle_labels(self):
+        """Check image segmentation on a set of frames. These tests just check
+        that input and output are okay and datatypes are correct; the
+        accuracy of the results is not tested, this should be done in
+        the jupyter-notebook.
+        """
+        # Prepare some images for segmentation
+        coins = self.coins()
+        result = particle_labels(frames=coins, energies=self.Es, edge=self.Edge())
+        expected_shape = coins.shape[1:]
+        self.assertEqual(result.shape, expected_shape)
+        self.assertEqual(result.dtype, np.int)
+
+    def test_edge_jump(self):
+        """Check image masking based on the difference between the pre-edge
+        and post-edge."""
+        frames = self.coins()
+        ej = edge_jump(frames, energies=self.Es, edge=self.Edge())
+        # Check that frames are reduced to a 2D image
+        self.assertEqual(ej.shape, frames.shape[1:])
+        self.assertEqual(ej.dtype, np.float)
+
+    def test_edge_mask(self):
+        """Check that the edge jump filter can be successfully turned into a
+        boolean."""
+        frames = self.coins()
+        ej = edge_mask(frames, energies=self.Es, edge=self.Edge(), min_size="auto")
+        # Check that frames are reduced to a 2D image
+        self.assertEqual(ej.shape, frames.shape[1:])
+        self.assertEqual(ej.dtype, np.bool)
 
 class TXMFrameTest(XanespyTestCase):
 
