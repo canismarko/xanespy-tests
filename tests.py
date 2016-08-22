@@ -43,14 +43,15 @@ from xanespy.utilities import (xycoord, prog, position, Extent,
 from xanespy.xanes_frameset import (XanesFrameset,
                                     calculate_direct_whiteline,
                                     calculate_gaussian_whiteline)
-from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask
+from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask, apply_references
 from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import (import_ssrl_frameset,
-                               import_aps_8BM_frameset,_average_frames,
-                               magnification_correction)
-from xanespy.xradia import XRMFile, decode_ssrl_params, decode_aps_params
+                               import_aps_8BM_frameset, _average_frames,
+                               magnification_correction, decode_aps_params,
+                               decode_ssrl_params, read_metadata)
+from xanespy.xradia import XRMFile
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
                            Zoneplate, ZoneplatePoint, Detector)
 from xanespy.txmstore import TXMStore
@@ -192,21 +193,56 @@ class APSImportTest(XanespyTestCase):
         self.assertTrue(os.path.exists(self.hdf))
         # Check that the file was created
         with h5py.File(self.hdf, mode='r') as f:
-            group = f['ocv_fov03/imported']
+            group = f['fov03/imported']
             keys = list(group.keys())
             self.assertIn('intensities', keys)
-            self.assertEqual(group['intensities'].shape, (2, 1024, 1024))
+            self.assertEqual(group['intensities'].shape, (2, 2, 1024, 1024))
             self.assertIn('references', keys)
             self.assertIn('absorbances', keys)
             self.assertEqual(group['pixel_sizes'].attrs['unit'], 'µm')
-            self.assertEqual(group['pixel_sizes'].shape, (2,))
-            expected_Es = np.array([8249.9365234375, 8353.0322265625])
+            self.assertEqual(group['pixel_sizes'].shape, (2,2))
+            self.assertTrue(np.any(group['pixel_sizes'].value > 0))
+            expected_Es = np.array([[8249.9365234375, 8353.0322265625],
+                                    [8249.9365234375, 8353.0322265625]])
             self.assertTrue(np.array_equal(group['energies'].value, expected_Es))
             self.assertIn('timestamps', keys)
+            expected_timestamp = np.array([
+                [[b'2016-07-02 16:31:36-05:51', b'2016-07-02 16:32:26-05:51'],
+                 [b'2016-07-02 17:50:35-05:51', b'2016-07-02 17:51:25-05:51']],
+                [[b'2016-07-02 22:19:23-05:51', b'2016-07-02 22:19:58-05:51'],
+                 [b'2016-07-02 23:21:21-05:51', b'2016-07-02 23:21:56-05:51']],
+            ], dtype="S32")
+            self.assertTrue(np.array_equal(group['timestamps'].value,
+                                           expected_timestamp))
             self.assertIn('filenames', keys)
             self.assertIn('original_positions', keys)
-            self.assertIn('relative_positions', keys)
-            self.assertEqual(group['relative_positions'].shape, (2, 3))
+            # self.assertIn('relative_positions', keys)
+            # self.assertEqual(group['relative_positions'].shape, (2, 3))
+
+    def test_params_from_aps(self):
+        """Check that the new naming scheme is decoded properly."""
+        ref_filename = "ref_xanesocv_8250_0eV.xrm"
+        result = decode_aps_params(ref_filename)
+        expected = {
+            'sample_name': 'ocv',
+            'position_name': 'ref',
+            'is_background': True,
+            'energy': 8250.0,
+        }
+        self.assertEqual(result, expected)
+
+    def test_file_metadata(self):
+        filenames = [os.path.join(APS_DIR, 'fov03_xanessoc01_8353_0eV.xrm')]
+        df = read_metadata(filenames=filenames, flavor='aps')
+        self.assertIsInstance(df, pd.DataFrame)
+        row = df.ix[0]
+        self.assertIn('shape', row.keys())
+        # Check the correct start time
+        realtime = dt.datetime(2016, 7, 2, 23, 21, 21,
+                               tzinfo=pytz.timezone('US/Central'))
+        realtime = realtime.astimezone(pytz.utc).replace(tzinfo=None)
+        self.assertIsInstance(row['starttime'], dt.datetime)
+        self.assertEqual(row['starttime'].to_pydatetime(), realtime)
 
 
 class SSRLImportTest(XanespyTestCase):
@@ -810,6 +846,25 @@ class XanesMathTest(XanespyTestCase):
         coins = (coins * S.reshape(61,1,1))
         return coins
 
+    def test_apply_references(self):
+        # Create some fake frames. Reshaping is to mimic multi-dim dataset
+        Is, refs = self.coins()[:2], self.coins()[2:4]
+        # Is = Is.reshape(1, 2, 303, 384)
+        Is = [[0.1, 0.01],
+              [0.001, 1]]
+        Is = np.array([Is, Is])
+        Is = Is.reshape(1, 2, 2, 2)
+        refs = [[1, 1],
+                [1, 1]]
+        refs = np.array([refs, refs])
+        refs = refs.reshape(1, 2, 2, 2)
+        out = np.zeros_like(Is)
+        # Apply actual reference function
+        As = apply_references(Is, refs, out)
+        self.assertEqual(As.shape, Is.shape)
+        calculated = -np.log(Is/refs)
+        self.assertTrue(np.array_equal(As, calculated))
+
     def test_direct_whiteline(self):
         """Check the algorithm for calculating the whiteline position of a
         XANES spectrum using the maximum value."""
@@ -889,18 +944,6 @@ class TXMFrameTest(XanespyTestCase):
         )
         # Check that the averaging is correct
         self.assertTrue(np.array_equal(avg_frame.image_data, expected_array))
-
-    def test_params_from_aps(self):
-        """Check that the new naming scheme is decoded properly."""
-        ref_filename = "ref_xanesocv_8250_0eV.xrm"
-        result = decode_aps_params(ref_filename)
-        expected = {
-            'sample_name': 'ocv',
-            'position_name': 'ref',
-            'is_background': True,
-            'energy': 8250.0,
-        }
-        self.assertEqual(result, expected)
 
     def test_pixel_size(self):
         sample_filename = "rep01_201502221044_NAT1050_Insitu03_p01_OCV_08250.0_eV_001of002.xrm"
