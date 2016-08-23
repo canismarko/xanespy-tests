@@ -43,7 +43,7 @@ from xanespy.utilities import (xycoord, prog, position, Extent,
 from xanespy.xanes_frameset import (XanesFrameset,
                                     calculate_direct_whiteline,
                                     calculate_gaussian_whiteline)
-from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask, apply_references, frame_indices
+from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask, apply_references, iter_indices
 from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
 from xanespy.edges import KEdge, k_edges
@@ -253,6 +253,7 @@ class SSRLImportTest(XanespyTestCase):
 
     def tearDown(self):
         if os.path.exists(self.hdf):
+            return
             os.remove(self.hdf)
 
     def test_imported_hdf(self):
@@ -835,6 +836,7 @@ class XanesMathTest(XanespyTestCase):
     def setUp(self):
         self.Edge = k_edges['Ni_NCA']
         self.Es = np.linspace(8250, 8640, num=61)
+        prog.quiet = True
 
     def coins(self):
         """Prepare some example frames using images from the skimage
@@ -848,7 +850,7 @@ class XanesMathTest(XanespyTestCase):
     def test_frame_indices(self):
         """Check that frame_indices method returns the right slices."""
         indata = np.zeros(shape=(11, 61, 1024, 1024))
-        indices = frame_indices(indata)
+        indices = frame_indices(indata, leftover_dims=2)
         self.assertEqual(len(list(indices)), 11*61)
 
     def test_apply_references(self):
@@ -873,14 +875,16 @@ class XanesMathTest(XanespyTestCase):
     def test_direct_whiteline(self):
         """Check the algorithm for calculating the whiteline position of a
         XANES spectrum using the maximum value."""
+        print("TODO: Make sure that only energies in map_range are included")
         # Load some test data
         spectrum = pd.read_csv(os.path.join(SSRL_DIR, 'NCA_xanes.csv'),
                                index_col=0, sep=' ', names=['Absorbance'])
         # Calculate the whiteline position
-        intensities = np.array([spectrum['Absorbance'].values])
+        intensities = np.array([[spectrum['Absorbance'].values]])
         results = direct_whitelines(spectra=intensities,
-                                    energies=spectrum.index,
+                                    energies=np.array([spectrum.index]),
                                     edge=k_edges['Ni_NCA'])
+        print(results.shape)
         self.assertEqual(results, [8350.])
 
     def test_particle_labels(self):
