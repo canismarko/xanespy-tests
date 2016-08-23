@@ -43,7 +43,7 @@ from xanespy.utilities import (xycoord, prog, position, Extent,
 from xanespy.xanes_frameset import (XanesFrameset,
                                     calculate_direct_whiteline,
                                     calculate_gaussian_whiteline)
-from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask, apply_references
+from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask, apply_references, frame_indices
 from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
 from xanespy.edges import KEdge, k_edges
@@ -86,7 +86,6 @@ class SSRLScriptTest(unittest.TestCase):
         )
 
     def tearDown(self):
-        return
         os.remove(self.output_path)
         os.remove(self.scaninfo_path)
 
@@ -261,14 +260,16 @@ class SSRLImportTest(XanespyTestCase):
         # Check that the file was created
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
-            group = f['ssrl-test-data_rep1']
+            group = f['ssrl-test-data/imported']
             keys = list(group.keys())
             self.assertIn('intensities', keys)
-            self.assertEqual(group['intensities'].shape, (2, 1024, 1024))
+            self.assertEqual(group['intensities'].shape, (1, 2, 1024, 1024))
             self.assertIn('references', keys)
             self.assertIn('absorbances', keys)
             self.assertEqual(group['pixel_sizes'].attrs['unit'], 'µm')
-            self.assertTrue(np.array_equal(group['energies'].value, np.array([8324., 8354.])))
+            isEqual = np.array_equal(group['energies'].value,
+                                     np.array([[8324., 8354.]]))
+            self.assertTrue(isEqual, msg=group['energies'].value)
             self.assertIn('timestamps', keys)
             self.assertIn('filenames', keys)
             self.assertIn('original_positions', keys)
@@ -279,10 +280,8 @@ class SSRLImportTest(XanespyTestCase):
         ref_filename = "rep01_000001_ref_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
         result = decode_ssrl_params(ref_filename)
         expected = {
-            'repetition': 1,
-            'date_string': '',
-            'sample_name': 'NCA_INSITU_OCV_FOV01_Ni',
-            'position_name': '',
+            'sample_name': 'rep01',
+            'position_name': 'NCA_INSITU_OCV_FOV01_Ni',
             'is_background': True,
             'energy': 8250.0,
         }
@@ -291,10 +290,8 @@ class SSRLImportTest(XanespyTestCase):
         sample_filename = "rep01_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
         result = decode_ssrl_params(sample_filename)
         expected = {
-            'repetition': 1,
-            'date_string': '',
-            'sample_name': 'NCA_INSITU_OCV_FOV01_Ni',
-            'position_name': '',
+            'sample_name': 'rep01',
+            'position_name': 'NCA_INSITU_OCV_FOV01_Ni',
             'is_background': False,
             'energy': 8250.0,
         }
@@ -755,6 +752,7 @@ class TXMFramesetTest(XanespyTestCase):
         # Copy the HDF5 file so we can safely make changes
         shutil.copy(self.originhdf, self.temphdf)
         self.frameset = XanesFrameset(filename=self.temphdf,
+                                      groupname='ssrl-test-data',
                                       edge=k_edges['Ni_NCA'])
 
     def tearDown(self):
@@ -775,8 +773,11 @@ class TXMFramesetTest(XanespyTestCase):
                              translations=np.array([[0, 0],[100, 100]]),
                              out=store.absorbances)
             old_imgs = store.absorbances.value
+        # Check that reference_frame arguments of the wrong shape are rejected
+        with self.assertRaisesRegex(Exception, "does not match shape"):
+            self.frameset.align_frames(commit=False, reference_frame=0)
         # Perform an alignment but don't commit to disk
-        self.frameset.align_frames(commit=False, reference_frame=0)
+        self.frameset.align_frames(commit=False, reference_frame=(0, 0))
         # Check that the translations weren't applied yet
         with self.frameset.store() as store:
             hasnotchanged = np.all(np.equal(old_imgs, store.absorbances.value))
@@ -784,10 +785,10 @@ class TXMFramesetTest(XanespyTestCase):
         # Apply the translations
         self.frameset.apply_transformations(crop=True, commit=True)
         with self.frameset.store() as store:
-            haschanged = np.any(~np.equal(old_imgs, store.absorbances.value))
             new_shape = store.absorbances.shape
-        self.assertTrue(haschanged)
-        self.assertNotEqual(old_imgs.shape, new_shape)
+        # Test for inequality by checking shapes
+        self.assertEqual(old_imgs.shape[:-2], new_shape[:-2])
+        self.assertNotEqual(old_imgs.shape[-2:], new_shape[-2:])
 
     def test_deferred_transformations(self):
         """Test that the system properly stores data transformations for later
@@ -819,8 +820,6 @@ class TXMFramesetTest(XanespyTestCase):
         self.assertTrue(np.array_equal(self.frameset._rotations,
                                        np.array([0, 6])))
         # Check that transformations are reset after being applied
-        with self.frameset.store() as store:
-            old_shape = store.absorbances.shape
         self.frameset.apply_transformations(commit=True, crop=True)
         self.assertEqual(self.frameset._translations, None)
         self.assertEqual(self.frameset._scales, None)
@@ -845,6 +844,12 @@ class XanesMathTest(XanespyTestCase):
         S = 1/(1+np.exp(-(self.Es-8353))) + 0.1*np.sin(4*self.Es-4*8353)
         coins = (coins * S.reshape(61,1,1))
         return coins
+
+    def test_frame_indices(self):
+        """Check that frame_indices method returns the right slices."""
+        indata = np.zeros(shape=(11, 61, 1024, 1024))
+        indices = frame_indices(indata)
+        self.assertEqual(len(list(indices)), 11*61)
 
     def test_apply_references(self):
         # Create some fake frames. Reshaping is to mimic multi-dim dataset
@@ -908,6 +913,7 @@ class XanesMathTest(XanespyTestCase):
         # Check that frames are reduced to a 2D image
         self.assertEqual(ej.shape, frames.shape[1:])
         self.assertEqual(ej.dtype, np.bool)
+
 
 class TXMFrameTest(XanespyTestCase):
 
