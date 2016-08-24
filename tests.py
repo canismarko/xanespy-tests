@@ -791,6 +791,11 @@ class TXMFramesetTest(XanespyTestCase):
         self.assertEqual(old_imgs.shape[:-2], new_shape[:-2])
         self.assertNotEqual(old_imgs.shape[-2:], new_shape[-2:])
 
+    def test_extent(self):
+        self.assertEqual(self.frameset.extent('absorbances'), (-20, 20, -20, 20))
+        # self.assertEqual(self.frameset.extent('absorbances', idx=None),
+        #                  (-20, 20, -20, 20))
+
     def test_deferred_transformations(self):
         """Test that the system properly stores data transformations for later
         processing."""
@@ -835,16 +840,20 @@ class XanesMathTest(XanespyTestCase):
 
     def setUp(self):
         self.Edge = k_edges['Ni_NCA']
-        self.Es = np.linspace(8250, 8640, num=61)
+        # Prepare energies of the right dimensions
+        Es = np.linspace(8250, 8640, num=61)
+        Es = np.repeat(Es.reshape(1, 61), repeats=3, axis=0)
+        self.Es = Es
         prog.quiet = True
 
     def coins(self):
         """Prepare some example frames using images from the skimage
         library."""
-        coins = np.array([data.coins() for i in range(0, 61)])
+        coins = np.array([data.coins() for i in range(0, 3*61)])
+        coins = coins.reshape(3, 61, *data.coins().shape)
         # Adjust each frame to mimic an X-ray edge with a sigmoid
         S = 1/(1+np.exp(-(self.Es-8353))) + 0.1*np.sin(4*self.Es-4*8353)
-        coins = (coins * S.reshape(61,1,1))
+        coins = (coins * S.reshape(3, 61,1,1))
         return coins
 
     def test_frame_indices(self):
@@ -884,7 +893,6 @@ class XanesMathTest(XanespyTestCase):
         results = direct_whitelines(spectra=intensities,
                                     energies=np.array([spectrum.index]),
                                     edge=k_edges['Ni_NCA'])
-        print(results.shape)
         self.assertEqual(results, [8350.])
 
     def test_particle_labels(self):
@@ -906,7 +914,7 @@ class XanesMathTest(XanespyTestCase):
         frames = self.coins()
         ej = edge_jump(frames, energies=self.Es, edge=self.Edge())
         # Check that frames are reduced to a 2D image
-        self.assertEqual(ej.shape, frames.shape[1:])
+        self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.float)
 
     def test_edge_mask(self):
@@ -915,7 +923,7 @@ class XanesMathTest(XanespyTestCase):
         frames = self.coins()
         ej = edge_mask(frames, energies=self.Es, edge=self.Edge(), min_size="auto")
         # Check that frames are reduced to a 2D image
-        self.assertEqual(ej.shape, frames.shape[1:])
+        self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.bool)
 
 
@@ -989,15 +997,15 @@ class TXMFrameTest(XanespyTestCase):
         self.assertEqual(xrm.endtime(), end)
         xrm.close()
 
-    def test_extent(self):
-        frame = TXMFrame()
-        frame.relative_position = (0, 0, 0)
-        frame.um_per_pixel = Pixel(vertical=0.0390625, horizontal=0.0390625)
-        expected = Extent(
-            left=-20, right=20,
-            bottom=-10, top=10
-        )
-        self.assertEqual(frame.extent(img_shape=(512, 1024)), expected)
+    # def test_extent(self):
+    #     frame = TXMFrame()
+    #     frame.relative_position = (0, 0, 0)
+    #     frame.um_per_pixel = Pixel(vertical=0.0390625, horizontal=0.0390625)
+    #     expected = Extent(
+    #         left=-20, right=20,
+    #         bottom=-10, top=10
+    #     )
+    #     self.assertEqual(frame.extent(img_shape=(512, 1024)), expected)
 
     def test_xy_to_pixel(self):
         extent = Extent(
