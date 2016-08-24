@@ -856,10 +856,10 @@ class XanesMathTest(XanespyTestCase):
         coins = (coins * S.reshape(3, 61,1,1))
         return coins
 
-    def test_frame_indices(self):
+    def test_iter_indices(self):
         """Check that frame_indices method returns the right slices."""
         indata = np.zeros(shape=(11, 61, 1024, 1024))
-        indices = frame_indices(indata, leftover_dims=2)
+        indices = iter_indices(indata)
         self.assertEqual(len(list(indices)), 11*61)
 
     def test_apply_references(self):
@@ -884,7 +884,6 @@ class XanesMathTest(XanespyTestCase):
     def test_direct_whiteline(self):
         """Check the algorithm for calculating the whiteline position of a
         XANES spectrum using the maximum value."""
-        print("TODO: Make sure that only energies in map_range are included")
         # Load some test data
         spectrum = pd.read_csv(os.path.join(SSRL_DIR, 'NCA_xanes.csv'),
                                index_col=0, sep=' ', names=['Absorbance'])
@@ -904,7 +903,7 @@ class XanesMathTest(XanespyTestCase):
         # Prepare some images for segmentation
         coins = self.coins()
         result = particle_labels(frames=coins, energies=self.Es, edge=self.Edge())
-        expected_shape = coins.shape[1:]
+        expected_shape = coins.shape[-2:]
         self.assertEqual(result.shape, expected_shape)
         self.assertEqual(result.dtype, np.int)
 
