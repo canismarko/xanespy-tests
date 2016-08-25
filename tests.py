@@ -835,6 +835,10 @@ class TXMFramesetTest(XanespyTestCase):
             new_shape = store.absorbances.shape
         self.assertEqual(new_shape, (2, 1022, 1022))
 
+    def test_spectrum(self):
+        spectrum = self.frameset.spectrum()
+        self.assertEqual(spectrum.shape, (2,))
+
 
 class XanesMathTest(XanespyTestCase):
 
