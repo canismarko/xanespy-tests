@@ -43,7 +43,9 @@ from xanespy.utilities import (xycoord, prog, position, Extent,
 from xanespy.xanes_frameset import (XanesFrameset,
                                     calculate_direct_whiteline,
                                     calculate_gaussian_whiteline)
-from xanespy.xanes_math import transform_images, direct_whitelines, particle_labels, edge_jump, edge_mask, apply_references, iter_indices
+from xanespy.xanes_math import (transform_images, direct_whitelines,
+                                particle_labels, edge_jump, edge_mask,
+                                apply_references, iter_indices)
 from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
 from xanespy.edges import KEdge, k_edges
@@ -53,15 +55,12 @@ from xanespy.importers import (import_ssrl_frameset,
                                decode_ssrl_params, read_metadata)
 from xanespy.xradia import XRMFile
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
-                           Zoneplate, ZoneplatePoint, Detector)
+                               Zoneplate, ZoneplatePoint, Detector)
 from xanespy.txmstore import TXMStore
 
 TEST_DIR = os.path.dirname(__file__)
 SSRL_DIR = os.path.join(TEST_DIR, 'txm-data-ssrl')
 APS_DIR = os.path.join(TEST_DIR, 'txm-data-aps')
-
-# Silence progress bars for testing
-# prog.quiet = True
 
 
 class SSRLScriptTest(unittest.TestCase):
@@ -264,17 +263,26 @@ class SSRLImportTest(XanespyTestCase):
             group = f['ssrl-test-data/imported']
             keys = list(group.keys())
             self.assertIn('intensities', keys)
+            self.assertEqual(group['intensities'].attrs['context'], 'frameset')
             self.assertEqual(group['intensities'].shape, (1, 2, 1024, 1024))
             self.assertIn('references', keys)
+            self.assertEqual(group['references'].attrs['context'], 'frameset')
             self.assertIn('absorbances', keys)
+            self.assertEqual(group['absorbances'].attrs['context'], 'frameset')
             self.assertEqual(group['pixel_sizes'].attrs['unit'], 'µm')
+            self.assertEqual(group['pixel_sizes'].attrs['context'], 'metadata')
             isEqual = np.array_equal(group['energies'].value,
                                      np.array([[8324., 8354.]]))
             self.assertTrue(isEqual, msg=group['energies'].value)
+            self.assertEqual(group['energies'].attrs['context'], 'metadata')
             self.assertIn('timestamps', keys)
+            self.assertEqual(group['timestamps'].attrs['context'], 'metadata')
             self.assertIn('filenames', keys)
+            self.assertEqual(group['filenames'].attrs['context'], 'metadata')
             self.assertIn('original_positions', keys)
+            self.assertEqual(group['original_positions'].attrs['context'], 'metadata')
             self.assertIn('relative_positions', keys)
+            self.assertEqual(group['relative_positions'].attrs['context'], 'metadata')
 
     def test_params_from_ssrl(self):
         # First a reference frame
@@ -310,15 +318,17 @@ class SSRLImportTest(XanespyTestCase):
                 [0,1,0,1,0],
                 [0,1,1,1,0],
                 [0,0,0,0,0]]
-        imgs = np.array([img1, img2], dtype=np.float)
-        pixel_sizes = np.array([1, 2])
+        imgs = np.array([[img1, img2], [img1, img2]], dtype=np.float)
+        pixel_sizes = np.array([[1, 2], [1, 2]])
         scales, translations = magnification_correction(imgs, pixel_sizes)
+        # Check that the right shape result is returns
+        self.assertEqual(scales.shape, (2, 2))
         # Check that the first result is not corrected
-        self.assertEqual(scales[0], 1.)
-        self.assertEqual(list(translations[0]), [0, 0])
+        self.assertEqual(scales[0,0], 1.)
+        self.assertEqual(list(translations[0, 0]), [0, 0])
         # Check the values for translation and scale for the changed image
-        self.assertEqual(scales[1], 0.5)
-        self.assertEqual(list(translations[1]), [1., 1.])
+        self.assertEqual(scales[0,1], 0.5)
+        self.assertEqual(list(translations[0,1]), [1., 1.])
 
 
 class TXMStoreTest(XanespyTestCase):
@@ -380,6 +390,7 @@ class TXMStoreTest(XanespyTestCase):
         f = h5py.File(self.hdfname)
         # Check that all top-level groups are accounted for
         tree = store.data_tree()
+        print(tree)
         self.assertEqual(len(f.keys()), len(tree))
         # Check properties of a specific entry (absorbance data)
         abs_dict = tree[0]['children'][0]['children'][0]
@@ -928,6 +939,11 @@ class XanesMathTest(XanespyTestCase):
         # Check that frames are reduced to a 2D image
         self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.bool)
+
+    def test_transform_images(self):
+        data = self.coins().astype('int')
+        ret = transform_images(data)
+        self.assertEqual(ret.dtype, np.float32)
 
 
 class TXMFrameTest(XanespyTestCase):
