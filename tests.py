@@ -235,6 +235,7 @@ class APSImportTest(XanespyTestCase):
         self.assertIsInstance(df, pd.DataFrame)
         row = df.ix[0]
         self.assertIn('shape', row.keys())
+        self.assertIn('timestep_name', row.keys())
         # Check the correct start time
         realtime = dt.datetime(2016, 7, 2, 23, 21, 21,
                                tzinfo=pytz.timezone('US/Central'))
@@ -283,6 +284,9 @@ class SSRLImportTest(XanespyTestCase):
             self.assertEqual(group['original_positions'].attrs['context'], 'metadata')
             self.assertIn('relative_positions', keys)
             self.assertEqual(group['relative_positions'].attrs['context'], 'metadata')
+            self.assertIn('timestep_names', keys)
+            self.assertEqual(group['relative_positions'].attrs['context'], 'metadata')
+            self.assertEqual(group['timestep_names'][0], "rep01")
 
     def test_params_from_ssrl(self):
         # First a reference frame
@@ -346,20 +350,23 @@ class TXMStoreTest(XanespyTestCase):
 
     def store(self, mode='r'):
         store = TXMStore(hdf_filename=self.hdfname,
-                         parent_name='ssrl-test-data_rep1',
+                         parent_name='ssrl-test-data',
                          data_name='imported',
                          mode=mode)
         return store
 
     def test_getters(self):
         store = self.store()
-        self.assertEqual(store.intensities.shape, (2, 1024, 1024))
-        self.assertEqual(store.references.shape, (2, 1024, 1024))
-        self.assertEqual(store.absorbances.shape, (2, 1024, 1024))
-        self.assertEqual(store.pixel_sizes.shape, (2,))
-        self.assertEqual(store.energies.shape, (2,))
-        self.assertEqual(store.timestamps.shape, (2, 2))
-        self.assertEqual(store.original_positions.shape, (2, 3))
+        self.assertEqual(store.intensities.shape, (1, 2, 1024, 1024))
+        self.assertEqual(store.references.shape, (1, 2, 1024, 1024))
+        self.assertEqual(store.absorbances.shape, (1, 2, 1024, 1024))
+        self.assertEqual(store.pixel_sizes.shape, (1, 2,))
+        self.assertEqual(store.energies.shape, (1, 2,))
+        self.assertEqual(store.timestamps.shape, (1, 2, 2))
+        self.assertEqual(store.original_positions.shape, (1, 2, 3))
+        # Raises exception for non-existent datasets
+        with self.assertRaises(exceptions.GroupKeyError):
+            store.get_map('madeup_data')
 
     def test_data_group(self):
         store = self.store()
