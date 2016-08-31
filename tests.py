@@ -26,6 +26,7 @@ import math
 import os
 import shutil
 import warnings
+from collections import namedtuple
 
 import h5py
 import numpy as np
@@ -40,12 +41,11 @@ from cases import XanespyTestCase
 from xanespy import exceptions
 from xanespy.utilities import (xycoord, prog, position, Extent,
                                xy_to_pixel, pixel_to_xy)
-from xanespy.xanes_frameset import (XanesFrameset,
-                                    calculate_direct_whiteline,
-                                    calculate_gaussian_whiteline)
+from xanespy.xanes_frameset import XanesFrameset
 from xanespy.xanes_math import (transform_images, direct_whitelines,
                                 particle_labels, edge_jump, edge_mask,
-                                apply_references, iter_indices)
+                                apply_references, iter_indices,
+                                fit_kedge, kedge_params, KEdgeParams)
 from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
 from xanespy.edges import KEdge, k_edges
@@ -700,25 +700,6 @@ class TXMMathTest(XanespyTestCase):
         self.assertApproximatelyEqual(out[0], 55)
         self.assertApproximatelyEqual(out[1], 60)
 
-    def test_calculate_gaussian_whiteline(self):
-        """These test patterns do not contain enough data to properly fit,
-        they merely test if the routine completes without errors."""
-        absorbances = [700, 698, 705, 703, 702]
-        energies = [8250, 8252, 8351, 8440, 8450]
-        data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni_NCA']())
-        self.assertApproximatelyEqual(out, 8333)
-        # Test using multi-dimensional absorbances (eg. image frames)
-        absorbances = [np.array([700, 700]),
-                       np.array([698, 703]),
-                       np.array([705, 704]),
-                       np.array([703, 705]),
-                       np.array([702, 707])]
-        data = pd.Series(absorbances, index=energies)
-        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni_NCA']())
-        self.assertApproximatelyEqual(out[0], 8333)
-        self.assertApproximatelyEqual(out[1], 8333)
-
     def test_2d_whiteline(self):
         # Test using two-dimensional absorbances (ie. image frames)
         absorbances = [
@@ -915,6 +896,43 @@ class XanesMathTest(XanespyTestCase):
                                     energies=np.array([spectrum.index]),
                                     edge=k_edges['Ni_NCA'])
         self.assertEqual(results, [8350.])
+
+    def test_fit_kedge(self):
+        prog.quiet = True
+        # Load some test data
+        spectrum = pd.read_csv(os.path.join(SSRL_DIR, 'NCA_xanes.csv'),
+                               index_col=0, sep=' ', names=['Absorbance'])
+        Is = np.array([spectrum.Absorbance.values])
+        Es = np.array([spectrum.index])
+        # Give an intial guess
+        guess = KEdgeParams(1/5, -0.4, 8333,
+                            1,
+                            -0.0008, 0,
+                            1, 14, 1)
+        out = fit_kedge(Is, energies=Es, p0=guess)
+        self.assertEqual(out.shape, (1, len(kedge_params)))
+        out_params = KEdgeParams(*out[0])
+        self.assertAlmostEqual(out_params.E0 + out_params.gb, 8350.46, places=2)
+
+    def test_calculate_gaussian_whiteline(self):
+        """These test patterns do not contain enough data to properly fit,
+        they merely test if the routine completes without errors."""
+        absorbances = np.array([[700, 698, 705, 703, 702]])
+        energies = np.array([[8250, 8252, 8351, 8440, 8450]])
+        out = gaussian_whitelines(absorbances, energies=energies,
+                                  edge=k_edges['Ni_NCA']())
+        self.assertTrue(out.shape, (1))
+        self.assertEqual(out, [8333])
+        # Test using multi-dimensional absorbances (eg. image frames)
+        absorbances = [np.array([700, 700]),
+                       np.array([698, 703]),
+                       np.array([705, 704]),
+                       np.array([703, 705]),
+                       np.array([702, 707])]
+        data = pd.Series(absorbances, index=energies)
+        out, goodness = calculate_gaussian_whiteline(data, edge=k_edges['Ni_NCA']())
+        self.assertApproximatelyEqual(out[0], 8333)
+        self.assertApproximatelyEqual(out[1], 8333)
 
     def test_particle_labels(self):
         """Check image segmentation on a set of frames. These tests just check
@@ -1163,49 +1181,49 @@ class TXMFrameTest(XanespyTestCase):
             np.array_equal(result, expected)
         )
 
-frameset_testdata = [
-    np.array([
-        [12, 8, 2.4, 0],
-        [9, 11, 0, 1.6],
-        [0.12, 0.08, 48, 50],
-        [0.09, 0.11, 52, 50],
-    ])
-]
+# frameset_testdata = [
+#     np.array([
+#         [12, 8, 2.4, 0],
+#         [9, 11, 0, 1.6],
+#         [0.12, 0.08, 48, 50],
+#         [0.09, 0.11, 52, 50],
+#     ])
+# ]
 
-class MockDataset():
-    def __init__(self, value=None):
-        self.value = value
+# class MockDataset():
+#     def __init__(self, value=None):
+#         self.value = value
 
-    @property
-    def shape(self):
-        return self.value.shape
+#     @property
+#     def shape(self):
+#         return self.value.shape
 
-class MockFrame(TXMFrame):
-    image_data = MockDataset()
-    hdf_filename = None
-    def __init__(self, *args, **kwargs):
-        pass
+# class MockFrame(TXMFrame):
+#     image_data = MockDataset()
+#     hdf_filename = None
+#     def __init__(self, *args, **kwargs):
+#         pass
 
 
-class MockFrameset(XanesFrameset):
-    hdf_filename = None
-    parent_groupname = None
-    active_particle_idx = None
-    edge = k_edges['Ni_NCA']
-    def __init__(self, *args, **kwargs):
-        pass
+# class MockFrameset(XanesFrameset):
+#     hdf_filename = None
+#     parent_groupname = None
+#     active_particle_idx = None
+#     edge = k_edges['Ni_NCA']
+#     def __init__(self, *args, **kwargs):
+#         pass
 
-    def normalizer(self):
-        return Normalize(0, 1)
+#     def normalizer(self):
+#         return Normalize(0, 1)
 
-    def __len__(self):
-        return len(frameset_testdata)
+#     def __len__(self):
+#         return len(frameset_testdata)
 
-    def __iter__(self):
-        for d in frameset_testdata:
-            frame = MockFrame()
-            frame.image_data.value = d
-            yield frame
+#     def __iter__(self):
+#         for d in frameset_testdata:
+#             frame = MockFrame()
+#             frame.image_data.value = d
+#             yield frame
 
 # class TXMGtkViewerTest(unittest.TestCase):
 #     @unittest.expectedFailure
