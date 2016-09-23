@@ -50,9 +50,12 @@ from xanespy.frame import (TXMFrame, Pixel, rebin_image,
                            apply_reference)
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import (import_ssrl_frameset,
-                               import_aps_8BM_frameset, _average_frames,
-                               magnification_correction, decode_aps_params,
-                               decode_ssrl_params, read_metadata)
+                               import_aps_8BM_frameset,
+                               import_ptychography_frameset,
+                               _average_frames,
+                               magnification_correction,
+                               decode_aps_params, decode_ssrl_params,
+                               read_metadata, CURRENT_VERSION as IMPORT_VERSION)
 from xanespy.xradia import XRMFile
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
                                Zoneplate, ZoneplatePoint, Detector)
@@ -61,6 +64,7 @@ from xanespy.txmstore import TXMStore
 TEST_DIR = os.path.dirname(__file__)
 SSRL_DIR = os.path.join(TEST_DIR, 'txm-data-ssrl')
 APS_DIR = os.path.join(TEST_DIR, 'txm-data-aps')
+PTYCHO_DIR = os.path.join(TEST_DIR, 'ptycho-data-als/NS_160406074')
 
 
 class SSRLScriptTest(unittest.TestCase):
@@ -174,12 +178,12 @@ class SSRLScriptTest(unittest.TestCase):
             self.assertEqual(f.readline(), 'collect Test0_fov0_08250.0_eV_000of005.xrm\n')
 
 
-class APSImportTest(XanespyTestCase):
-    """Check that the program can import a collection of SSRL frames from
-    a directory."""
+class PtychographyImportTest(XanespyTestCase):
     def setUp(self):
         prog.quiet = True
-        self.hdf = os.path.join(APS_DIR, 'testdata.h5')
+        self.hdf = os.path.join(PTYCHO_DIR, 'testdata.h5')
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
 
     def tearDown(self):
         if os.path.exists(self.hdf):
@@ -187,11 +191,68 @@ class APSImportTest(XanespyTestCase):
             pass
 
     def test_imported_hdf(self):
-        import_aps_8BM_frameset(APS_DIR, hdf_filename=self.hdf, quiet=True)
+        import_ptychography_frameset(PTYCHO_DIR, hdf_filename=self.hdf, quiet=True)
         self.assertTrue(os.path.exists(self.hdf))
+        with h5py.File(self.hdf, mode='r') as f:
+            parent = f['NS_160406074']
+            group = parent['imported']
+            keys = list(group.keys())
+            # Check metadata about beamline
+            self.assertEqual(parent.attrs['technique'], 'ptychography STXM')
+            # Check data is structured properly
+            self.assertIn('intensities', keys)
+            self.assertEqual(group['intensities'].shape, (3, 228, 228))
+            self.assertIn('stxm', keys)
+            self.assertEqual(group['stxm'].shape, (3, 20, 20))
+            self.assertEqual(group['pixel_sizes'].attrs['unit'], 'nm')
+            self.assertTrue(np.all(group['pixel_sizes'].value == 4.17),
+                            msg=group['pixel_sizes'].value)
+            self.assertEqual(group['pixel_sizes'].shape, (3,))
+            self.assertTrue(np.any(group['pixel_sizes'].value > 0))
+            expected_Es = np.array([843.9069591, 847.90651815,
+                                    850.15627011])
+            np.testing.assert_allclose(group['energies'].value, expected_Es)
+            ## NB: Timestamps not available in the cxi files
+            # self.assertIn('timestamps', keys)
+            # expected_timestamp = np.array([
+            #     [[b'2016-07-02 16:31:36-05:51', b'2016-07-02 16:32:26-05:51'],
+            #      [b'2016-07-02 17:50:35-05:51', b'2016-07-02 17:51:25-05:51']],
+            #     [[b'2016-07-02 22:19:23-05:51', b'2016-07-02 22:19:58-05:51'],
+            #      [b'2016-07-02 23:21:21-05:51', b'2016-07-02 23:21:56-05:51']],
+            # ], dtype="S32")
+            # self.assertTrue(np.array_equal(group['timestamps'].value,
+            #                                expected_timestamp))
+            self.assertIn('filenames', keys)
+            ## NB: It's not clear exactly what "original positions"
+            ## means for STXM data
+            # self.assertIn('original_positions', # keys)
+
+class APSImportTest(XanespyTestCase):
+    """Check that the program can import a collection of SSRL frames from
+    a directory."""
+    def setUp(self):
+        self.hdf = os.path.join(APS_DIR, 'testdata.h5')
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
+        prog.quiet = True
+
+    def tearDown(self):
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
+
+    def test_imported_hdf(self):
+        import_aps_8BM_frameset(APS_DIR, hdf_filename=self.hdf, quiet=True)
         # Check that the file was created
+        self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
             group = f['fov03/imported']
+            parent = f['fov03']
+            # Check metadata about beamline
+            self.assertEqual(parent.attrs['technique'], 'Full-field TXM')
+            self.assertEqual(parent.attrs['xanespy_version'], IMPORT_VERSION)
+            self.assertEqual(parent.attrs['beamline'], "APS 8-BM-B")
+            self.assertEqual(parent.attrs['original_directory'], APS_DIR)
+            # Check h5 data structure
             keys = list(group.keys())
             self.assertIn('intensities', keys)
             self.assertEqual(group['intensities'].shape, (2, 2, 1024, 1024))
@@ -222,7 +283,7 @@ class APSImportTest(XanespyTestCase):
         ref_filename = "ref_xanesocv_8250_0eV.xrm"
         result = decode_aps_params(ref_filename)
         expected = {
-            'sample_name': 'ocv',
+            'timestep_name': 'ocv',
             'position_name': 'ref',
             'is_background': True,
             'energy': 8250.0,
@@ -250,10 +311,11 @@ class SSRLImportTest(XanespyTestCase):
     def setUp(self):
         prog.quiet = True
         self.hdf = os.path.join(SSRL_DIR, 'testdata.h5')
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
 
     def tearDown(self):
         if os.path.exists(self.hdf):
-            return
             os.remove(self.hdf)
 
     def test_imported_hdf(self):
@@ -262,6 +324,13 @@ class SSRLImportTest(XanespyTestCase):
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
             group = f['ssrl-test-data/imported']
+            parent = f['ssrl-test-data']
+            # Check metadata about beamline
+            self.assertEqual(parent.attrs['technique'], 'Full-field TXM')
+            self.assertEqual(parent.attrs['xanespy_version'], IMPORT_VERSION)
+            self.assertEqual(parent.attrs['beamline'], "SSRL 6-2c")
+            self.assertEqual(parent.attrs['original_directory'], SSRL_DIR)
+            # Check imported data structure
             keys = list(group.keys())
             self.assertIn('intensities', keys)
             self.assertEqual(group['intensities'].attrs['context'], 'frameset')
@@ -293,7 +362,7 @@ class SSRLImportTest(XanespyTestCase):
         ref_filename = "rep01_000001_ref_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
         result = decode_ssrl_params(ref_filename)
         expected = {
-            'sample_name': 'rep01',
+            'timestep_name': 'rep01',
             'position_name': 'NCA_INSITU_OCV_FOV01_Ni',
             'is_background': True,
             'energy': 8250.0,
@@ -303,7 +372,7 @@ class SSRLImportTest(XanespyTestCase):
         sample_filename = "rep01_201511202114_NCA_INSITU_OCV_FOV01_Ni_08250.0_eV_001of010.xrm"
         result = decode_ssrl_params(sample_filename)
         expected = {
-            'sample_name': 'rep01',
+            'timestep_name': 'rep01',
             'position_name': 'NCA_INSITU_OCV_FOV01_Ni',
             'is_background': False,
             'energy': 8250.0,
