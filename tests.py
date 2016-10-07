@@ -40,7 +40,8 @@ from skimage import data
 from cases import XanespyTestCase
 from xanespy import exceptions
 from xanespy.utilities import (xycoord, prog, position, Extent,
-                               xy_to_pixel, pixel_to_xy)
+                               xy_to_pixel, pixel_to_xy,
+                               component)
 from xanespy.xanes_frameset import XanesFrameset
 from xanespy.xanes_math import (transform_images, direct_whitelines,
                                 particle_labels, edge_jump, edge_mask,
@@ -190,28 +191,38 @@ class PtychographyImportTest(XanespyTestCase):
             # os.remove(self.hdf)
             pass
 
+    def test_directory_names(self):
+        """Tests for checking some of the edge cases for what can be passed as
+        a directory string."""
+        import_ptychography_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf, quiet=True)
+
     def test_imported_hdf(self):
         import_ptychography_frameset(PTYCHO_DIR, hdf_filename=self.hdf, quiet=True)
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
-            parent = f['NS_160406074']
+            dataset_name = 'NS_160406074'
+            parent = f[dataset_name]
+            # Check metadata about the sample
+            self.assertEqual(parent.attrs['latest_data_name'], "imported")
             group = parent['imported']
             keys = list(group.keys())
             # Check metadata about beamline
             self.assertEqual(parent.attrs['technique'], 'ptychography STXM')
             # Check data is structured properly
+            self.assertEqual(group['timestep_names'].value[0], bytes(dataset_name, 'ascii'))
             self.assertIn('intensities', keys)
-            self.assertEqual(group['intensities'].shape, (3, 228, 228))
+            self.assertEqual(group['intensities'].shape, (1, 3, 228, 228))
             self.assertIn('stxm', keys)
-            self.assertEqual(group['stxm'].shape, (3, 20, 20))
+            self.assertEqual(group['stxm'].shape, (1, 3, 20, 20))
             self.assertEqual(group['pixel_sizes'].attrs['unit'], 'nm')
             self.assertTrue(np.all(group['pixel_sizes'].value == 4.17),
                             msg=group['pixel_sizes'].value)
-            self.assertEqual(group['pixel_sizes'].shape, (3,))
+            self.assertEqual(group['pixel_sizes'].shape, (1, 3))
             self.assertTrue(np.any(group['pixel_sizes'].value > 0))
-            expected_Es = np.array([843.9069591, 847.90651815,
-                                    850.15627011])
+            expected_Es = np.array([[843.9069591, 847.90651815,
+                                     850.15627011]])
             np.testing.assert_allclose(group['energies'].value, expected_Es)
+            self.assertEqual(group['energies'].shape, (1, 3))
             ## NB: Timestamps not available in the cxi files
             # self.assertIn('timestamps', keys)
             # expected_timestamp = np.array([
@@ -223,9 +234,13 @@ class PtychographyImportTest(XanespyTestCase):
             # self.assertTrue(np.array_equal(group['timestamps'].value,
             #                                expected_timestamp))
             self.assertIn('filenames', keys)
+            self.assertEqual(group['filenames'].shape, (1, 3))
+            self.assertIn('relative_positions', keys)
+            self.assertEqual(group['relative_positions'].shape, (1, 3, 3))
             ## NB: It's not clear exactly what "original positions"
             ## means for STXM data
-            # self.assertIn('original_positions', # keys)
+            self.assertIn('original_positions', keys)
+            self.assertEqual(group['original_positions'].shape, (1, 3, 3))
 
 class APSImportTest(XanespyTestCase):
     """Check that the program can import a collection of SSRL frames from
@@ -1037,7 +1052,25 @@ class XanesMathTest(XanespyTestCase):
     def test_transform_images(self):
         data = self.coins().astype('int')
         ret = transform_images(data)
-        self.assertEqual(ret.dtype, np.float32)
+        self.assertEqual(ret.dtype, np.float)
+        # Test complex images
+        data = self.coins().astype('complex')
+        ret = transform_images(data)
+        self.assertEqual(ret.dtype, np.complex)
+
+
+class UtilitiesTest(XanespyTestCase):
+    def test_interpret_complex(self):
+        j = complex(0, 1)
+        cmplx = np.array([[0+1j, 1+2j],
+                          [2+3j, 3+4j]])
+        mod = component(cmplx, 'modulus')
+        np.testing.assert_array_equal(mod,
+                                      np.array([[1, np.sqrt(5)],
+                                                [np.sqrt(13), 5]]))
+        # Check if real data works ok
+        real = np.array([[0, 1],[1, 2]])
+        np.testing.assert_array_equal(component(real, "modulus"), real)
 
 
 class TXMFrameTest(XanespyTestCase):
