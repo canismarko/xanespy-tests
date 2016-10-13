@@ -41,7 +41,8 @@ from skimage import data
 from cases import XanespyTestCase
 from xanespy import exceptions
 from xanespy.utilities import (xycoord, prog, position, Extent,
-                               xy_to_pixel, pixel_to_xy, Pixel)
+                               xy_to_pixel, pixel_to_xy,
+                               component, Pixel)
 from xanespy.xanes_frameset import XanesFrameset
 from xanespy.xanes_math import (transform_images, direct_whitelines,
                                 particle_labels, edge_jump, edge_mask,
@@ -50,9 +51,12 @@ from xanespy.xanes_math import (transform_images, direct_whitelines,
                                 KEdgeParams)
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import (import_ssrl_frameset,
-                               import_aps_8BM_frameset, _average_frames,
-                               magnification_correction, decode_aps_params,
-                               decode_ssrl_params, read_metadata)
+                               import_aps_8BM_frameset,
+                               import_ptychography_frameset,
+                               _average_frames,
+                               magnification_correction,
+                               decode_aps_params, decode_ssrl_params,
+                               read_metadata, CURRENT_VERSION as IMPORT_VERSION)
 from xanespy.xradia import XRMFile
 from xanespy.beamlines import (sector8_xanes_script, ssrl6_xanes_script,
                                Zoneplate, ZoneplatePoint, Detector)
@@ -61,6 +65,7 @@ from xanespy.txmstore import TXMStore
 TEST_DIR = os.path.dirname(__file__)
 SSRL_DIR = os.path.join(TEST_DIR, 'txm-data-ssrl')
 APS_DIR = os.path.join(TEST_DIR, 'txm-data-aps')
+PTYCHO_DIR = os.path.join(TEST_DIR, 'ptycho-data-als/NS_160406074')
 
 
 class SSRLScriptTest(unittest.TestCase):
@@ -172,7 +177,6 @@ class SSRLScriptTest(unittest.TestCase):
             self.assertEqual(f.readline(), 'setexp 0.50\n')
             self.assertEqual(f.readline(), 'setbinning 2\n')
             self.assertEqual(f.readline(), 'collect Test0_fov0_08250.0_eV_000of005.xrm\n')
-
 
 
 @unittest.skip("Fix these tests before next APS beamtime")
@@ -313,15 +317,77 @@ class ApsScriptTest(unittest.TestCase):
             "collect test_sample_xanes02_8342_0eV.xrm"
         )
 
+class PtychographyImportTest(XanespyTestCase):
+    def setUp(self):
+        prog.quiet = True
+        self.hdf = os.path.join(PTYCHO_DIR, 'testdata.h5')
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
+
+    def tearDown(self):
+        if os.path.exists(self.hdf):
+            # os.remove(self.hdf)
+            pass
+
+    def test_directory_names(self):
+        """Tests for checking some of the edge cases for what can be passed as
+        a directory string."""
+        import_ptychography_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf, quiet=True)
+
+    def test_imported_hdf(self):
+        import_ptychography_frameset(PTYCHO_DIR, hdf_filename=self.hdf, quiet=True)
+        self.assertTrue(os.path.exists(self.hdf))
+        with h5py.File(self.hdf, mode='r') as f:
+            dataset_name = 'NS_160406074'
+            parent = f[dataset_name]
+            # Check metadata about the sample
+            self.assertEqual(parent.attrs['latest_data_name'], "imported")
+            group = parent['imported']
+            keys = list(group.keys())
+            # Check metadata about beamline
+            self.assertEqual(parent.attrs['technique'], 'ptychography STXM')
+            # Check data is structured properly
+            self.assertEqual(group['timestep_names'].value[0], bytes(dataset_name, 'ascii'))
+            self.assertIn('intensities', keys)
+            self.assertEqual(group['intensities'].shape, (1, 3, 228, 228))
+            self.assertIn('stxm', keys)
+            self.assertEqual(group['stxm'].shape, (1, 3, 20, 20))
+            self.assertEqual(group['pixel_sizes'].attrs['unit'], 'nm')
+            self.assertTrue(np.all(group['pixel_sizes'].value == 4.17),
+                            msg=group['pixel_sizes'].value)
+            self.assertEqual(group['pixel_sizes'].shape, (1, 3))
+            self.assertTrue(np.any(group['pixel_sizes'].value > 0))
+            expected_Es = np.array([[843.9069591, 847.90651815,
+                                     850.15627011]])
+            np.testing.assert_allclose(group['energies'].value, expected_Es)
+            self.assertEqual(group['energies'].shape, (1, 3))
+            ## NB: Timestamps not available in the cxi files
+            # self.assertIn('timestamps', keys)
+            # expected_timestamp = np.array([
+            #     [[b'2016-07-02 16:31:36-05:51', b'2016-07-02 16:32:26-05:51'],
+            #      [b'2016-07-02 17:50:35-05:51', b'2016-07-02 17:51:25-05:51']],
+            #     [[b'2016-07-02 22:19:23-05:51', b'2016-07-02 22:19:58-05:51'],
+            #      [b'2016-07-02 23:21:21-05:51', b'2016-07-02 23:21:56-05:51']],
+            # ], dtype="S32")
+            # self.assertTrue(np.array_equal(group['timestamps'].value,
+            #                                expected_timestamp))
+            self.assertIn('filenames', keys)
+            self.assertEqual(group['filenames'].shape, (1, 3))
+            self.assertIn('relative_positions', keys)
+            self.assertEqual(group['relative_positions'].shape, (1, 3, 3))
+            ## NB: It's not clear exactly what "original positions"
+            ## means for STXM data
+            self.assertIn('original_positions', keys)
+            self.assertEqual(group['original_positions'].shape, (1, 3, 3))
 
 class APSImportTest(XanespyTestCase):
     """Check that the program can import a collection of SSRL frames from
     a directory."""
     def setUp(self):
-        prog.quiet = True
         self.hdf = os.path.join(APS_DIR, 'testdata.h5')
         if os.path.exists(self.hdf):
             os.remove(self.hdf)
+        prog.quiet = True
 
     def tearDown(self):
         if os.path.exists(self.hdf):
@@ -329,10 +395,17 @@ class APSImportTest(XanespyTestCase):
 
     def test_imported_hdf(self):
         import_aps_8BM_frameset(APS_DIR, hdf_filename=self.hdf, quiet=True)
-        self.assertTrue(os.path.exists(self.hdf))
         # Check that the file was created
+        self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
             group = f['fov03/imported']
+            parent = f['fov03']
+            # Check metadata about beamline
+            self.assertEqual(parent.attrs['technique'], 'Full-field TXM')
+            self.assertEqual(parent.attrs['xanespy_version'], IMPORT_VERSION)
+            self.assertEqual(parent.attrs['beamline'], "APS 8-BM-B")
+            self.assertEqual(parent.attrs['original_directory'], APS_DIR)
+            # Check h5 data structure
             keys = list(group.keys())
             self.assertIn('intensities', keys)
             self.assertEqual(group['intensities'].shape, (2, 2, 1024, 1024))
@@ -406,6 +479,13 @@ class SSRLImportTest(XanespyTestCase):
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
             group = f['ssrl-test-data/imported']
+            parent = f['ssrl-test-data']
+            # Check metadata about beamline
+            self.assertEqual(parent.attrs['technique'], 'Full-field TXM')
+            self.assertEqual(parent.attrs['xanespy_version'], IMPORT_VERSION)
+            self.assertEqual(parent.attrs['beamline'], "SSRL 6-2c")
+            self.assertEqual(parent.attrs['original_directory'], SSRL_DIR)
+            # Check imported data structure
             keys = list(group.keys())
             self.assertIn('intensities', keys)
             self.assertEqual(group['intensities'].attrs['context'], 'frameset')
@@ -872,7 +952,25 @@ class XanesMathTest(XanespyTestCase):
         prog.quiet = True
         data = self.coins().astype('int')
         ret = transform_images(data)
-        self.assertEqual(ret.dtype, np.float64)
+        self.assertEqual(ret.dtype, np.float)
+        # Test complex images
+        data = self.coins().astype('complex')
+        ret = transform_images(data)
+        self.assertEqual(ret.dtype, np.complex)
+
+
+class UtilitiesTest(XanespyTestCase):
+    def test_interpret_complex(self):
+        j = complex(0, 1)
+        cmplx = np.array([[0+1j, 1+2j],
+                          [2+3j, 3+4j]])
+        mod = component(cmplx, 'modulus')
+        np.testing.assert_array_equal(mod,
+                                      np.array([[1, np.sqrt(5)],
+                                                [np.sqrt(13), 5]]))
+        # Check if real data works ok
+        real = np.array([[0, 1],[1, 2]])
+        np.testing.assert_array_equal(component(real, "modulus"), real)
 
 
 class TXMFrameTest(XanespyTestCase):
