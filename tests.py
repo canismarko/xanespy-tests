@@ -52,7 +52,7 @@ from xanespy.xanes_math import (transform_images, direct_whitelines,
 from xanespy.edges import KEdge, k_edges
 from xanespy.importers import (import_ssrl_frameset,
                                import_aps_8BM_frameset,
-                               import_ptychography_frameset,
+                               import_nanosurveyor_frameset,
                                _average_frames,
                                magnification_correction,
                                decode_aps_params, decode_ssrl_params,
@@ -319,23 +319,21 @@ class ApsScriptTest(unittest.TestCase):
 
 class PtychographyImportTest(XanespyTestCase):
     def setUp(self):
-        prog.quiet = True
         self.hdf = os.path.join(PTYCHO_DIR, 'testdata.h5')
         if os.path.exists(self.hdf):
             os.remove(self.hdf)
 
     def tearDown(self):
         if os.path.exists(self.hdf):
-            # os.remove(self.hdf)
-            pass
+            os.remove(self.hdf)
 
     def test_directory_names(self):
         """Tests for checking some of the edge cases for what can be passed as
         a directory string."""
-        import_ptychography_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf, quiet=True)
+        import_nanosurveyor_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf, quiet=True)
 
     def test_imported_hdf(self):
-        import_ptychography_frameset(PTYCHO_DIR, hdf_filename=self.hdf, quiet=True)
+        import_nanosurveyor_frameset(PTYCHO_DIR, hdf_filename=self.hdf, quiet=True)
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
             dataset_name = 'NS_160406074'
@@ -353,10 +351,9 @@ class PtychographyImportTest(XanespyTestCase):
             self.assertIn('stxm', keys)
             self.assertEqual(group['stxm'].shape, (1, 3, 20, 20))
             self.assertEqual(group['pixel_sizes'].attrs['unit'], 'nm')
-            self.assertTrue(np.all(group['pixel_sizes'].value == 4.17),
+            self.assertTrue(np.all(group['pixel_sizes'].value == 4.16667),
                             msg=group['pixel_sizes'].value)
             self.assertEqual(group['pixel_sizes'].shape, (1, 3))
-            self.assertTrue(np.any(group['pixel_sizes'].value > 0))
             expected_Es = np.array([[843.9069591, 847.90651815,
                                      850.15627011]])
             np.testing.assert_allclose(group['energies'].value, expected_Es)
@@ -379,6 +376,44 @@ class PtychographyImportTest(XanespyTestCase):
             ## means for STXM data
             self.assertIn('original_positions', keys)
             self.assertEqual(group['original_positions'].shape, (1, 3, 3))
+
+    def test_partial_import(self):
+        """Sometimes the user may want to specify that only a subset of
+        ptychographs be imported.
+        """
+        energy_range = (843, 848)
+        import_nanosurveyor_frameset(PTYCHO_DIR,
+                                     energy_range=energy_range,
+                                     hdf_filename=self.hdf, quiet=True)
+        with h5py.File(self.hdf, mode='r') as f:
+            dataset_name = 'NS_160406074'
+            parent = f[dataset_name]
+            group = parent['imported']
+            self.assertEqual(group['intensities'].shape[0:2],
+                             (1, 2))
+
+    def test_multiple_import(self):
+        """Check if we can import multiple different directories of different
+        energies ranges."""
+        # Import two data sets (order is important to test for sorting)
+        import_nanosurveyor_frameset("{}-low-energy".format(PTYCHO_DIR),
+                                     hdf_filename=self.hdf, quiet=True,
+                                     hdf_groupname="merged")
+        import_nanosurveyor_frameset("{}-high-energy".format(PTYCHO_DIR),
+                                     hdf_filename=self.hdf, quiet=True,
+                                     hdf_groupname="merged")
+        # Check resulting HDF5 file
+        with h5py.File(self.hdf) as f:
+            self.assertIn('merged', f.keys())
+            # Check that things are ordered by energy
+            saved_Es = f['/merged/imported/energies'].value
+            np.testing.assert_array_equal(saved_Es, np.sort(saved_Es))
+            relpath = "ptycho-data-als/NS_160406074-{}-energy/160406074/{}/NS_160406074.cxi"
+            sorted_files = [[bytes(relpath.format("low", "001"), 'ascii'),
+                             bytes(relpath.format("low", "009"), 'ascii'),
+                             bytes(relpath.format("high", "021"), 'ascii'),]]
+            saved_files = f['/merged/imported/filenames']
+            np.testing.assert_array_equal(saved_files, sorted_files)
 
 class APSImportTest(XanespyTestCase):
     """Check that the program can import a collection of SSRL frames from
@@ -972,8 +1007,32 @@ class UtilitiesTest(XanespyTestCase):
         real = np.array([[0, 1],[1, 2]])
         np.testing.assert_array_equal(component(real, "modulus"), real)
 
+    def test_xy_to_pixel(self):
+        extent = Extent(
+            left=-1000, right=-900,
+            top=300, bottom=250
+        )
+        result = xy_to_pixel(
+            xy=xycoord(x=-950, y=250),
+            extent=extent,
+            shape=(10, 10)
+        )
+        self.assertEqual(result, Pixel(vertical=0, horizontal=5))
 
-class TXMFrameTest(XanespyTestCase):
+    def test_pixel_to_xy(self):
+        extent = Extent(
+            left=-1000, right=-900,
+            top=300, bottom=250
+        )
+        result = pixel_to_xy(
+            pixel=Pixel(vertical=10, horizontal=5),
+            extent=extent,
+            shape=(10, 10)
+        )
+        self.assertEqual(result, xycoord(x=-950, y=300))
+
+
+class XradiaTest(XanespyTestCase):
 
     def test_pixel_size(self):
         sample_filename = "rep01_20161456_ssrl-test-data_08324.0_eV_001of003.xrm"
@@ -1006,30 +1065,38 @@ class TXMFrameTest(XanespyTestCase):
         self.assertEqual(xrm.endtime(), end)
         xrm.close()
 
-    def test_xy_to_pixel(self):
-        extent = Extent(
-            left=-1000, right=-900,
-            top=300, bottom=250
-        )
-        result = xy_to_pixel(
-            xy=xycoord(x=-950, y=250),
-            extent=extent,
-            shape=(10, 10)
-        )
-        self.assertEqual(result, Pixel(vertical=0, horizontal=5))
+@unittest.skip("Probably not the right way to go about this")
+class MultipleFramesetTest(XanespyTestCase):
+    """Tests for how we can work with and combine multiple framesets."""
+    hdf = os.path.join(PTYCHO_DIR, 'mock-ptycho-data.h5')
 
-    def test_pixel_to_xy(self):
-        extent = Extent(
-            left=-1000, right=-900,
-            top=300, bottom=250
-        )
-        result = pixel_to_xy(
-            pixel=Pixel(vertical=10, horizontal=5),
-            extent=extent,
-            shape=(10, 10)
-        )
-        self.assertEqual(result, xycoord(x=-950, y=300))
+    def setUp(self):
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
+
+    def tearDown(self):
+        if os.path.exists(self.hdf):
+            os.remove(self.hdf)
+
+    def create_hdf_file(self):
+        # Create some fake HDF5 file group for testing
+        with h5py.File(self.hdf, mode="w"):
+            pass
+
+    def test_combine_framesets(self):
+        """Test the method that merges mutliple framesets into one."""
+        self.create_hdf_file()
+        fs_list = [
+            XanesFrameset(filename=self.hdf, groupname='group1', edge=None),
+            XanesFrameset(filename=self.hdf, groupname='group1', edge=None),
+        ]
+        # Check that it fails if the group exists
+        with self.assertRaises(exceptions.GroupKeyError):
+            merge_framesets(fs_list, new_group="group1")
+        # import_nanosurveyor_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf, quiet=True)
 
 
+
+# Launch the tests if this is run as a script
 if __name__ == '__main__':
     unittest.main()
