@@ -42,14 +42,15 @@ from cases import XanespyTestCase
 from xanespy import exceptions
 from xanespy.utilities import (xycoord, prog, position, Extent,
                                xy_to_pixel, pixel_to_xy,
-                               component, Pixel)
+                               get_component, Pixel)
 from xanespy.xanes_frameset import XanesFrameset
 from xanespy.xanes_math import (transform_images, direct_whitelines,
-                                particle_labels, edge_jump, edge_mask,
+                                particle_labels, k_edge_jump,
+                                k_edge_mask, l_edge_mask,
                                 apply_references, iter_indices,
                                 predict_edge, fit_kedge, kedge_params,
-                                KEdgeParams)
-from xanespy.edges import KEdge, k_edges
+                                KEdgeParams, extract_signals_nmf)
+from xanespy.edges import KEdge, k_edges, l_edges
 from xanespy.importers import (import_ssrl_frameset,
                                import_aps_8BM_frameset,
                                import_nanosurveyor_frameset,
@@ -391,6 +392,43 @@ class PtychographyImportTest(XanespyTestCase):
             group = parent['imported']
             self.assertEqual(group['intensities'].shape[0:2],
                              (1, 2))
+            self.assertEqual(group['filenames'].shape, (1, 2))
+
+    def test_exclude_re(self):
+        """Allow the user to exclude specific frames that are bad."""
+        import_nanosurveyor_frameset(PTYCHO_DIR,
+                                     exclude_re="(/009/|/100/)",
+                                     hdf_filename=self.hdf, quiet=True)
+        with h5py.File(self.hdf, mode='r') as f:
+            dataset_name = 'NS_160406074'
+            parent = f[dataset_name]
+            group = parent['imported']
+            self.assertEqual(group['intensities'].shape[0:2],
+                             (1, 2))
+
+    def test_redundant_energies(self):
+        """Test that a warning is triggered when importing the same energy
+        multiple times."""
+        # Do it once the normal way
+        import_nanosurveyor_frameset(PTYCHO_DIR,
+                                     hdf_filename=self.hdf, quiet=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            self.assertEqual(len(w), 0)
+            import_nanosurveyor_frameset(PTYCHO_DIR,
+                                         hdf_filename=self.hdf, quiet=True,
+                                         append=False)
+            self.assertEqual(len(w), 1)
+            self.assertIn('Overwriting', str(w[0].message))
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            self.assertEqual(len(w), 0)
+            # Import again to see if a warning is triggered
+            import_nanosurveyor_frameset(PTYCHO_DIR,
+                                         hdf_filename=self.hdf, quiet=True,
+                                         append=True)
+            self.assertEqual(len(w), 1)
+            self.assertIn('redundant energies', str(w[0].message))
 
     def test_multiple_import(self):
         """Check if we can import multiple different directories of different
@@ -401,7 +439,8 @@ class PtychographyImportTest(XanespyTestCase):
                                      hdf_groupname="merged")
         import_nanosurveyor_frameset("{}-high-energy".format(PTYCHO_DIR),
                                      hdf_filename=self.hdf, quiet=True,
-                                     hdf_groupname="merged")
+                                     hdf_groupname="merged",
+                                     append=True)
         # Check resulting HDF5 file
         with h5py.File(self.hdf) as f:
             self.assertIn('merged', f.keys())
@@ -869,15 +908,51 @@ class TXMFramesetTest(XanespyTestCase):
         spectrum = self.frameset.spectrum()
         self.assertEqual(spectrum.shape, (2,))
 
+    def test_calculate_clusters(self):
+        """Check the the data are separated into signals and discretized by
+        k-means clustering."""
+        N_COMPONENTS = 3
+        self.frameset.calculate_clusters(n_components=N_COMPONENTS,
+                                         method="nmf")
+        # Check that nmf signals and weights are saved
+        with self.frameset.store() as store:
+            n_energies = store.absorbances.shape[1]  # Expecting: 2
+            good_shape = (N_COMPONENTS, n_energies)
+            self.assertEqual(store.signals.shape, good_shape)
+            self.assertEqual(
+                store.signal_method,
+                "Non-Negative Matrix Factorization")
+            # Check for shape of weights
+            good_shape = (1, *self.frameset.frame_shape(), N_COMPONENTS)
+            self.assertEqual(store.signal_weights.shape, good_shape)
+        # Check that k-means cluster map is saved
+        with self.frameset.store() as store:
+            good_shape = (1, *self.frameset.frame_shape())
+            self.assertEqual(store.cluster_map.shape, good_shape)
+
+    def test_switch_groups(self):
+        """Test that switching between HDF5 groups works robustly."""
+        old_group = self.frameset.data_name
+        self.frameset.fork_data_group('new_group')
+        self.frameset.data_name = old_group
+        self.assertEqual(self.frameset.data_name, old_group)
+        self.frameset.fork_data_group('new_group')
+
+
 
 class XanesMathTest(XanespyTestCase):
 
     def setUp(self):
-        self.Edge = k_edges['Ni_NCA']
         # Prepare energies of the right dimensions
-        Es = np.linspace(8250, 8640, num=61)
-        Es = np.repeat(Es.reshape(1, 61), repeats=3, axis=0)
-        self.Es = Es
+        self.KEdge = k_edges['Ni_NCA']
+        K_Es = np.linspace(8250, 8640, num=61)
+        K_Es = np.repeat(K_Es.reshape(1, 61), repeats=3, axis=0)
+        self.K_Es = K_Es
+        # Prepare L-edge energies of the right dimensions
+        self.LEdge = l_edges['Ni_NCA']
+        L_Es = np.linspace(844, 862, num=61)
+        L_Es = np.repeat(L_Es.reshape(1, 61), repeats=3, axis=0)
+        self.L_Es = L_Es
         prog.quiet = True
 
     def coins(self):
@@ -886,7 +961,7 @@ class XanesMathTest(XanespyTestCase):
         coins = np.array([data.coins() for i in range(0, 3*61)])
         coins = coins.reshape(3, 61, *data.coins().shape)
         # Adjust each frame to mimic an X-ray edge with a sigmoid
-        S = 1/(1+np.exp(-(self.Es-8353))) + 0.1*np.sin(4*self.Es-4*8353)
+        S = 1/(1+np.exp(-(self.K_Es-8353))) + 0.1*np.sin(4*self.K_Es-4*8353)
         coins = (coins * S.reshape(3, 61,1,1))
         return coins
 
@@ -969,16 +1044,25 @@ class XanesMathTest(XanespyTestCase):
         """Check image masking based on the difference between the pre-edge
         and post-edge."""
         frames = self.coins()
-        ej = edge_jump(frames, energies=self.Es, edge=self.Edge())
+        ej = k_edge_jump(frames, energies=self.Es, edge=self.Edge())
         # Check that frames are reduced to a 2D image
         self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.float)
 
-    def test_edge_mask(self):
+    def test_k_edge_mask(self):
         """Check that the edge jump filter can be successfully turned into a
         boolean."""
         frames = self.coins()
-        ej = edge_mask(frames, energies=self.Es, edge=self.Edge(), min_size="auto")
+        ej = k_edge_mask(frames, energies=self.Es, edge=self.Edge(), min_size="auto")
+        # Check that frames are reduced to a 2D image
+        self.assertEqual(ej.shape, frames.shape[-2:])
+        self.assertEqual(ej.dtype, np.bool)
+
+    def test_l_edge_mask(self):
+        """Check that the edge jump filter works for l edges."""
+        frames = self.coins()  # NB: This mimics a K-edge, not an L-edge
+        ej = l_edge_mask(frames, energies=self.L_Es,
+                         edge=self.LEdge(), min_size=1)
         # Check that frames are reduced to a 2D image
         self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.bool)
@@ -989,9 +1073,25 @@ class XanesMathTest(XanespyTestCase):
         ret = transform_images(data)
         self.assertEqual(ret.dtype, np.float)
         # Test complex images
-        data = self.coins().astype('complex')
+        data = self.coins().astype(np.complex)
         ret = transform_images(data)
         self.assertEqual(ret.dtype, np.complex)
+
+    # def test_extract_signals(self):
+    #     # Prepare some testing data
+    #     x = np.linspace(0, 2*np.pi, num=2*np.pi*50)
+    #     signal0 = np.sin(2*x)
+    #     signal1 = np.sin(3*x)
+    #     in_weights = np.array([[0, 0.25, 0.5, 0.75, 1],
+    #                         [1, 0.75, 0.5, 0.25, 0]])
+    #     features = np.outer(in_weights[0], signal0)
+    #     features += np.outer(in_weights[1], signal1)
+    #     self.assertEqual(features.shape, (5, 314))
+    #     # Extract the signals
+    #     comps, weights = extract_signals_nmf(spectra=features, energies=x,
+    #                                      n_components=2)
+    #     # Check the results
+    #     np.testing.assert_allclose(comps, [signal0, signal1])
 
 
 class UtilitiesTest(XanespyTestCase):
@@ -999,13 +1099,13 @@ class UtilitiesTest(XanespyTestCase):
         j = complex(0, 1)
         cmplx = np.array([[0+1j, 1+2j],
                           [2+3j, 3+4j]])
-        mod = component(cmplx, 'modulus')
+        mod = get_component(cmplx, 'modulus')
         np.testing.assert_array_equal(mod,
                                       np.array([[1, np.sqrt(5)],
                                                 [np.sqrt(13), 5]]))
         # Check if real data works ok
         real = np.array([[0, 1],[1, 2]])
-        np.testing.assert_array_equal(component(real, "modulus"), real)
+        np.testing.assert_array_equal(get_component(real, "modulus"), real)
 
     def test_xy_to_pixel(self):
         extent = Extent(
