@@ -912,7 +912,7 @@ class TXMFramesetTest(XanespyTestCase):
         """Check the the data are separated into signals and discretized by
         k-means clustering."""
         N_COMPONENTS = 3
-        self.frameset.calculate_clusters(n_components=N_COMPONENTS,
+        self.frameset.calculate_signals(n_components=N_COMPONENTS,
                                          method="nmf")
         # Check that nmf signals and weights are saved
         with self.frameset.store() as store:
@@ -925,6 +925,10 @@ class TXMFramesetTest(XanespyTestCase):
             # Check for shape of weights
             good_shape = (1, *self.frameset.frame_shape(), N_COMPONENTS)
             self.assertEqual(store.signal_weights.shape, good_shape)
+        # Check that a composite RGB map is saved
+        with self.frameset.store() as store:
+            good_shape = (1, *self.frameset.frame_shape(), 3)
+            self.assertEqual(store.signal_map.shape, good_shape)
         # Check that k-means cluster map is saved
         with self.frameset.store() as store:
             good_shape = (1, *self.frameset.frame_shape())
