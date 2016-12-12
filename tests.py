@@ -49,7 +49,8 @@ from xanespy.xanes_math import (transform_images, direct_whitelines,
                                 k_edge_mask, l_edge_mask,
                                 apply_references, iter_indices,
                                 predict_edge, fit_kedge, kedge_params,
-                                KEdgeParams, extract_signals_nmf)
+                                KEdgeParams, extract_signals_nmf,
+                                guess_kedge)
 from xanespy.edges import KEdge, k_edges, l_edges
 from xanespy.importers import (import_ssrl_frameset,
                                import_aps_8BM_frameset,
@@ -977,6 +978,27 @@ class XanesMathTest(XanespyTestCase):
         # Test with two leftover dimensions
         indices = iter_indices(indata, leftover_dims=2)
         self.assertEqual(len(list(indices)), 3*13)
+
+    def test_guess_kedge_params(self):
+        """Given an arbitrary K-edge spectrum, can we guess reasonable
+        starting parameters for fitting?"""
+        # Load spectrum
+        spectrum = pd.read_csv(os.path.join(SSRL_DIR, 'NCA_xanes.csv'),
+                               index_col=0, sep=' ', names=['Absorbance'])
+        Es = np.array(spectrum.index)
+        As = np.array(spectrum.values)[:,0]
+        edge = k_edges['Ni_NCA']
+        # Do the guessing
+        result = guess_kedge(spectrum=As, energies=Es, edge=edge)
+        # Check resultant guessed parameters
+        self.assertAlmostEqual(result.scale, 0.2, places=2)
+        self.assertAlmostEqual(result.voffset, 0.45, places=2)
+        self.assertEqual(result.E0, edge.E_0)
+        self.assertAlmostEqual(result.ga, 0.97, places=2)
+        self.assertAlmostEqual(result.gb, 17, places=1)
+        self.assertAlmostEqual(result.pre_m, 0, places=5)
+        self.assertAlmostEqual(result.pre_b, 0, places=2)
+        
 
     def test_apply_references(self):
         # Create some fake frames. Reshaping is to mimic multi-dim dataset
