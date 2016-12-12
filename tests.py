@@ -42,7 +42,7 @@ from cases import XanespyTestCase
 from xanespy import exceptions
 from xanespy.utilities import (xycoord, prog, position, Extent,
                                xy_to_pixel, pixel_to_xy,
-                               get_component, Pixel)
+                               get_component, Pixel, broadcast_reverse)
 from xanespy.xanes_frameset import XanesFrameset
 from xanespy.xanes_math import (transform_images, direct_whitelines,
                                 particle_labels, k_edge_jump,
@@ -331,10 +331,10 @@ class PtychographyImportTest(XanespyTestCase):
     def test_directory_names(self):
         """Tests for checking some of the edge cases for what can be passed as
         a directory string."""
-        import_nanosurveyor_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf, quiet=True)
+        import_nanosurveyor_frameset(PTYCHO_DIR + "/", hdf_filename=self.hdf)
 
     def test_imported_hdf(self):
-        import_nanosurveyor_frameset(PTYCHO_DIR, hdf_filename=self.hdf, quiet=True)
+        import_nanosurveyor_frameset(PTYCHO_DIR, hdf_filename=self.hdf)
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
             dataset_name = 'NS_160406074'
@@ -548,7 +548,7 @@ class SSRLImportTest(XanespyTestCase):
             os.remove(self.hdf)
 
     def test_imported_hdf(self):
-        import_ssrl_frameset(SSRL_DIR, hdf_filename=self.hdf, quiet=True)
+        import_ssrl_frameset(SSRL_DIR, hdf_filename=self.hdf)
         # Check that the file was created
         self.assertTrue(os.path.exists(self.hdf))
         with h5py.File(self.hdf, mode='r') as f:
@@ -641,7 +641,7 @@ class TXMStoreTest(XanespyTestCase):
         if os.path.exists(cls.hdfname):
             os.remove(cls.hdfname)
         # Prepare an HDF5 file that these tests can use.
-        import_ssrl_frameset(SSRL_DIR, hdf_filename=cls.hdfname, quiet=True)
+        import_ssrl_frameset(SSRL_DIR, hdf_filename=cls.hdfname)
 
     @classmethod
     def tearDownClass(cls):
@@ -818,7 +818,7 @@ class TXMFramesetTest(XanespyTestCase):
         # Prepare an HDF5 file that these tests can use.
         if os.path.exists(cls.originhdf):
             os.remove(cls.originhdf)
-        import_ssrl_frameset(SSRL_DIR, hdf_filename=cls.originhdf, quiet=True)
+        import_ssrl_frameset(SSRL_DIR, hdf_filename=cls.originhdf)
 
     def setUp(self):
         # Copy the HDF5 file so we can safely make changes
@@ -1039,7 +1039,7 @@ class XanesMathTest(XanespyTestCase):
         """
         # Prepare some images for segmentation
         coins = self.coins()
-        result = particle_labels(frames=coins, energies=self.Es, edge=self.Edge())
+        result = particle_labels(frames=coins, energies=self.K_Es, edge=self.KEdge())
         expected_shape = coins.shape[-2:]
         self.assertEqual(result.shape, expected_shape)
         self.assertEqual(result.dtype, np.int)
@@ -1048,7 +1048,7 @@ class XanesMathTest(XanespyTestCase):
         """Check image masking based on the difference between the pre-edge
         and post-edge."""
         frames = self.coins()
-        ej = k_edge_jump(frames, energies=self.Es, edge=self.Edge())
+        ej = k_edge_jump(frames, energies=self.K_Es, edge=self.KEdge())
         # Check that frames are reduced to a 2D image
         self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.float)
@@ -1057,7 +1057,7 @@ class XanesMathTest(XanespyTestCase):
         """Check that the edge jump filter can be successfully turned into a
         boolean."""
         frames = self.coins()
-        ej = k_edge_mask(frames, energies=self.Es, edge=self.Edge(), min_size="auto")
+        ej = k_edge_mask(frames, energies=self.K_Es, edge=self.KEdge(), min_size=0)
         # Check that frames are reduced to a 2D image
         self.assertEqual(ej.shape, frames.shape[-2:])
         self.assertEqual(ej.dtype, np.bool)
@@ -1072,7 +1072,6 @@ class XanesMathTest(XanespyTestCase):
         self.assertEqual(ej.dtype, np.bool)
 
     def test_transform_images(self):
-        prog.quiet = True
         data = self.coins().astype('int')
         ret = transform_images(data)
         self.assertEqual(ret.dtype, np.float)
@@ -1099,6 +1098,13 @@ class XanesMathTest(XanespyTestCase):
 
 
 class UtilitiesTest(XanespyTestCase):
+
+    def test_broadcast_reverse(self):
+        orig = np.zeros(shape=(7, 48))
+        target_shape = (7, 48, 958, 432)
+        response = broadcast_reverse(orig, shape=target_shape)
+        self.assertEqual(response.shape, target_shape)
+
     def test_interpret_complex(self):
         j = complex(0, 1)
         cmplx = np.array([[0+1j, 1+2j],
@@ -1116,6 +1122,14 @@ class UtilitiesTest(XanespyTestCase):
             left=-1000, right=-900,
             top=300, bottom=250
         )
+        # Try an x-y value in the middle of a pixel
+        result = xy_to_pixel(
+            xy=xycoord(x=-975, y=272.5),
+            extent=extent,
+            shape=(10, 10)
+        )
+        self.assertEqual(result, Pixel(vertical=4, horizontal=2))
+        # Try an x-y value right on the edge of a pixel
         result = xy_to_pixel(
             xy=xycoord(x=-950, y=250),
             extent=extent,
@@ -1129,11 +1143,11 @@ class UtilitiesTest(XanespyTestCase):
             top=300, bottom=250
         )
         result = pixel_to_xy(
-            pixel=Pixel(vertical=10, horizontal=5),
+            pixel=Pixel(vertical=9, horizontal=4),
             extent=extent,
             shape=(10, 10)
         )
-        self.assertEqual(result, xycoord(x=-950, y=300))
+        self.assertEqual(result, xycoord(x=-955, y=297.5))
 
 
 class XradiaTest(XanespyTestCase):
