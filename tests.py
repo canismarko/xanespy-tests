@@ -468,6 +468,26 @@ class APSImportTest(XanespyTestCase):
         if os.path.exists(self.hdf):
             os.remove(self.hdf)
 
+    def test_import_empty_directory(self):
+        """Check that the proper exception is raised if the directory has no
+        TXM files in it."""
+        EMPTY_DIR = 'temp-empty-dir'
+        os.mkdir(EMPTY_DIR)
+        try:
+            with self.assertRaisesRegex(exceptions.DataNotFoundError,
+                                        'xanespy-tests/temp-empty-dir'):
+                import_aps_8BM_frameset(EMPTY_DIR, hdf_filename="test-file.hdf")
+        finally:
+            # Clean up by deleting any temporary files/directories
+            if os.path.exists('test-file.hdf'):
+                os.remove('test-file.hdf')
+            os.rmdir(EMPTY_DIR)
+
+    def test_imported_references(self):
+        import_aps_8BM_frameset(APS_DIR, hdf_filename=self.hdf, quiet=True)
+        with h5py.File(self.hdf, mode='r') as f:
+            self.assertIn('references', f['fov03/imported'].keys())
+
     def test_imported_hdf(self):
         import_aps_8BM_frameset(APS_DIR, hdf_filename=self.hdf, quiet=True)
         # Check that the file was created
