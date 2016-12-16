@@ -33,7 +33,8 @@ import numpy as np
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', PendingDeprecationWarning)
 import pandas as pd
-import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use("Agg")
 from matplotlib.colors import Normalize
 import pytz
 from skimage import data
@@ -1018,7 +1019,6 @@ class XanesMathTest(XanespyTestCase):
         self.assertAlmostEqual(result.gb, 17, places=1)
         self.assertAlmostEqual(result.pre_m, 0, places=5)
         self.assertAlmostEqual(result.pre_b, 0, places=2)
-        
 
     def test_apply_references(self):
         # Create some fake frames. Reshaping is to mimic multi-dim dataset
@@ -1068,6 +1068,7 @@ class XanesMathTest(XanespyTestCase):
         self.assertEqual(out.shape, (1, len(kedge_params)))
         out_params = KEdgeParams(*out[0])
         # Uncomment this plotting to check the fit if the test fails
+        # import matplotlib.pyplot as plt
         # plt.plot(Es, Is, marker=".")
         # plt.plot(Es, predict_edge(Es, *out_params), marker="+")
         # plt.show()
